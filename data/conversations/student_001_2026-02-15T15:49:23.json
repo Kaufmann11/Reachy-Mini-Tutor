@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-02-15T15:49:23",
+  "messages": [
+    {
+      "role": "user",
+      "content": "ich habe bald eine prüfung in data science"
+    },
+    {
+      "role": "assistant",
+      "content": "Super, dass du dich auf deine Data-Science-Prüfung vorbereitest! Damit ich dir bestmöglich helfen kann, habe ich ein paar Fragen:\n\n1. Welche Themen oder Bereiche der Data Science werden in deiner Prüfung besonders wichtig sein? (z.B. Statistik, Machine Learning, Datenvorverarbeitung)\n2. Wie gut fühlst du dich aktuell in diesen Themen? Gibt es Bereiche, wo du dich unsicher fühlst?\n3. Möchtest du eher konkrete Übungsaufgaben durchgehen oder lieber Erklärungen zu bestimmten Konzepten?\n4. Wie viel Zeit hast du noch bis zur Prüfung?\n\nSo kann ich dir einen passenden Plan vorschlagen. Was denkst du?"
+    }
+  ]
+}

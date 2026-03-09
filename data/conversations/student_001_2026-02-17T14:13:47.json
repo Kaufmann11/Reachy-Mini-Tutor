@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-02-17T14:13:47",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hilf mir"
+    },
+    {
+      "role": "assistant",
+      "content": "Klar, ich helfe dir gern! Damit ich genau weiß, wobei du Unterstützung brauchst, kannst du mir kurz sagen:\n\n1. Worum geht es genau? (Thema oder Aufgabe)\n2. Was hast du schon verstanden oder gemacht?\n3. Gibt es bestimmte Stellen, die dir besonders schwerfallen?\n4. Hast du eine Deadline oder eine Prüfung, für die du lernst?\n\nSo kann ich dir am besten und gezielt helfen. :)"
+    }
+  ]
+}

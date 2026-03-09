@@ -1,0 +1,22 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-02-18T12:17:22",
+  "messages": [
+    {
+      "role": "user",
+      "content": "ich brauche hilfe beim lernen"
+    },
+    {
+      "role": "assistant",
+      "content": "Klar, ich helfe dir gern! Damit ich dich gut unterstützen kann, sag mir bitte kurz:\n\n1. Welches Thema oder Fach möchtest du lernen?  \n2. Was ist dein konkretes Lernziel (z.B. Prüfung, Hausarbeit, Verständnis)?  \n3. Wann ist deine Prüfung oder Abgabefrist?  \n4. Wie gut kennst du dich schon mit dem Thema aus?  \n\nDann mache ich dir einen kurzen Plan, wie wir am besten starten. Passt das für dich?"
+    },
+    {
+      "role": "user",
+      "content": "ok ich werde dir deine fragen gerne beantworten, aber dmehr wie ein Dozent unterstützen u"
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, du möchtest, dass ich dich eher wie ein Dozent unterstütze – also etwas formeller und fachlich präzise. Das geht klar!\n\nDann nochmal kurz zur Struktur:  \n1. Welches Thema/Fach?  \n2. Was genau willst du erreichen (Prüfungsvorbereitung, Verständnis, Hausarbeit)?  \n3. Bis wann musst du das können?  \n4. Wie gut kennst du dich bisher aus?  \n\nWenn du mir das sagst, mache ich dir einen passenden Plan, und wir legen los – dann gebe ich dir klare Erklärungen und Übungen wie ein Dozent. Passt das so?"
+    }
+  ]
+}
