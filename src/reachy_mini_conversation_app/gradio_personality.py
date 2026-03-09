@@ -11,6 +11,7 @@ from pathlib import Path
 import gradio as gr
 
 from .config import config
+from .tools.rag_tool import ingest_document
 
 
 class PersonalityUI:
@@ -102,6 +103,13 @@ class PersonalityUI:
         self.new_personality_btn = gr.Button("New personality")
         self.available_tools_cg = gr.CheckboxGroup(label="Available tools (helper)", choices=[], value=[])
         self.save_btn = gr.Button("Save personality (instructions + tools)")
+        # RAG file upload
+        self.upload_label = gr.Markdown("### 📄Lecture Slides Upload")
+        self.file_upload = gr.File(
+            label="Upload PDF or PPTX",
+            file_types=[".pdf", ".pptx", ".ppt"],
+        )
+        self.upload_status = gr.Markdown("")
 
     def additional_inputs_ordered(self) -> list[Any]:
         """Return the additional inputs in the expected order for Stream."""
@@ -117,6 +125,9 @@ class PersonalityUI:
             self.voice_dropdown,
             self.available_tools_cg,
             self.save_btn,
+            self.upload_label,
+            self.file_upload,
+            self.upload_status,
         ]
 
     # ---------- Event wiring ----------
@@ -251,6 +262,15 @@ class PersonalityUI:
             body = "\n".join(selected)
             out = ("\n".join(comments) + ("\n" if comments else "") + body).strip() + "\n"
             return gr.update(value=out)
+        
+        def _handle_upload(file: Any) -> str:
+            if file is None:
+                return ""
+            try:
+                result = ingest_document(file.name)
+                return f"✅ {result}"
+            except Exception as e:
+                return f"❌ Upload failed: {e}"
 
         with blocks:
             self.apply_btn.click(
@@ -298,4 +318,9 @@ class PersonalityUI:
                 fn=_apply_personality,
                 inputs=[self.personalities_dropdown],
                 outputs=[self.status_md, self.preview_md],
+            )
+            self.file_upload.change(
+                fn=_handle_upload,
+                inputs=[self.file_upload],
+                outputs=[self.upload_status],
             )
