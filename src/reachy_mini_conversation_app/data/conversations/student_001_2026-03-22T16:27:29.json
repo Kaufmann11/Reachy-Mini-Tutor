@@ -1,0 +1,30 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-22T16:27:29",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Ich kann's nicht hören."
+    },
+    {
+      "role": "assistant",
+      "content": "Ja, ich höre dich laut und klar! Alles gut bei dir? Lass uns einfach loslegen. Worüber willst du heute reden oder lernen?"
+    },
+    {
+      "role": "user",
+      "content": "Weisst du, ob ich dir PDFs schicken kann und du die auswerten kannst oder zusammenfassen?"
+    },
+    {
+      "role": "assistant",
+      "content": "Klar, wenn du mir eine PDF schickst, kann ich sie mir anschauen und dir eine Zusammenfassung geben oder bestimmte Inhalte daraus erklären. Einfach hochladen, und ich helfe dir Schritt für Schritt weiter."
+    },
+    {
+      "role": "user",
+      "content": "Siehst du, was ich hochgeladen habe?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ich sehe gerade noch nichts Hochgeladenes. Wenn du eine PDF oder ein Dokument hochladen möchtest, leg einfach los, dann kann ich es mir anschauen."
+    }
+  ]
+}

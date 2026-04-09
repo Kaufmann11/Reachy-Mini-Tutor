@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-24T02:45:26",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Das PDF das ich hochgeladen habe?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ich kann leider den Inhalt eines PDF-Dokuments nicht direkt einsehen. Aber wenn du mir sagst, was genau du wissen möchtest oder irgendwelche Fragen zum Inhalt hast, helfe ich dir gerne weiter. Alternativ kannst du mir auch eine kurze Zusammenfassung oder einen bestimmten Abschnitt beschreiben, dann schauen wir gemeinsam genauer hin."
+    }
+  ]
+}

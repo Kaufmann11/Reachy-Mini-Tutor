@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-22T14:13:14",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Benutze das Rect-Tool und suche nach dem PDF."
+    },
+    {
+      "role": "assistant",
+      "content": "Sorry, Kumpel, aber ich hab keine Möglichkeit, direkt nach PDF-Dateien zu suchen. Ich kann dir aber gerne helfen, Informationen zusammenzufassen oder Tipps geben, wo du suchen könntest. Sag einfach Bescheid, was du brauchst."
+    }
+  ]
+}

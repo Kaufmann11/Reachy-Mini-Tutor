@@ -1,0 +1,30 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-19T16:44:44",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello Richie, kannst du mich hören?"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, na klar doch! Freut mich, dass du da bist. Wobei soll ich dich heute unterstützen?"
+    },
+    {
+      "role": "user",
+      "content": "."
+    },
+    {
+      "role": "assistant",
+      "content": "Prima, legen wir los. Ich stell dir ein paar kurze Fragen, damit wir richtig einsteigen. Erstens: Welches Thema genau willst du üben? Zweitens: Gibt’s ein bestimmtes Ziel, zum Beispiel eine Prüfung oder ein Referat? Und drittens: Wie viel Zeit hast du noch bis zur Deadline?"
+    },
+    {
+      "role": "user",
+      "content": "Kann ich hier ein PDF hochladen, wo alle Informationen enthalten sind?"
+    },
+    {
+      "role": "assistant",
+      "content": "Klar, das wär super hilfreich. Lad das PDF einfach hoch, dann schau ich mir die Inhalte an. Danach können wir gezielt an deinen Fragen arbeiten."
+    }
+  ]
+}

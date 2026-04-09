@@ -1,0 +1,22 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-24T01:39:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "cici"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, na du, schön dich zu sehen! Woran willst du heute arbeiten?"
+    },
+    {
+      "role": "user",
+      "content": "Kannst du mich gut hören?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ja, ich hör dich klar und deutlich. Alles top mit der Verbindung. Und von meiner Seite aus auch alles gut zu verstehen?"
+    }
+  ]
+}

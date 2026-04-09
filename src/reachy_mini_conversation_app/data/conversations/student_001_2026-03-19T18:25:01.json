@@ -1,0 +1,30 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-19T18:25:01",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Kann ich dir eine PDF-Datei hochladen und du liest sie für mich?"
+    },
+    {
+      "role": "assistant",
+      "content": "Klar, mach ich direkt. Ich check mal, was in der PDF steht. Einen Moment, ich schau mir die Inhalte an und geb dir dann direkt eine Zusammenfassung."
+    },
+    {
+      "role": "user",
+      "content": "Das PDF ist nun hochgeladen."
+    },
+    {
+      "role": "assistant",
+      "content": "Perfekt, ich schau mir jetzt den Text aus der PDF an. Einen Moment, ich such nach den relevanten Stellen."
+    },
+    {
+      "role": "assistant",
+      "content": "Hm, da gab es gerade ein Problem mit der Suche. Ich probier’s direkt nochmal, um den Inhalt aus der PDF zu holen. Einen Moment."
+    },
+    {
+      "role": "assistant",
+      "content": "Irgendwas klappt da gerade nicht mit dem Zugriff auf den PDF-Inhalt. Kein Stress, wir kriegen das hin. Lass uns kurz anders vorgehen. Erzähl mir mal: Was genau willst du aus dem PDF rausziehen? Welches Thema oder Abschnitt ist gerade wichtig?"
+    }
+  ]
+}

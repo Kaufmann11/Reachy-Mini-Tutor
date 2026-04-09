@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-23T04:09:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Siehst du das PDF jetzt?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ich kann aktuell keine PDFs direkt sehen oder ihren Inhalt analysieren. Aber wenn du mir sagst, was in der PDF steht oder welche Informationen du brauchst, helfe ich dir gern dabei, den Inhalt zu besprechen oder Fragen dazu zu beantworten."
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-23T04:07:21",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Ich habe dir ein PDF hochgeladen, kannst du es sehen?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ich kann leider keine PDF-Dateien direkt sehen oder öffnen. Aber du kannst mir gerne den Inhalt beschreiben oder sagen, worum es geht, dann helfe ich dir weiter."
+    },
+    {
+      "role": "user",
+      "content": "Es geht um eine Vier-Felder-Matrix, siehst du die?"
+    },
+    {
+      "role": "assistant",
+      "content": "Danke für den Hinweis. Ich hab da wohl was durcheinandergebracht – kein Problem, wir machen das anders. Erzähl mal kurz: Was steht genau in den vier Feldern dieser Matrix drin? Und was ist dein Ziel – musst du sie verstehen, interpretieren oder für eine Aufgabe anwenden?"
+    }
+  ]
+}

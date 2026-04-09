@@ -20,7 +20,8 @@ from reachy_mini_conversation_app.config import config
 from reachy_mini_conversation_app.prompts import get_session_voice, get_session_instructions
 from reachy_mini_conversation_app.tutor.conversation_manager import ConversationManager
 from reachy_mini_conversation_app.tutor.preference_extractor import extract_preferences
-from reachy_mini_conversation_app.tutor.profile_store import set_style, set_assertiveness
+from reachy_mini_conversation_app.tutor.profile_store import set_style, set_assertiveness, get_profile
+from reachy_mini_conversation_app.tutor.metrics_logger import log_turn
 from reachy_mini_conversation_app.tools.core_tools import (
     ToolDependencies,
     get_tool_specs,
@@ -29,6 +30,10 @@ from reachy_mini_conversation_app.tools.core_tools import (
 
 
 logger = logging.getLogger(__name__)
+_pending_document_context: str = ""  # Module-level for cross-instance access
+
+# Module-level document context for PDF injection
+_pending_document_context: str = ""
 
 OPEN_AI_INPUT_SAMPLE_RATE: Final[Literal[24000]] = 24000
 OPEN_AI_OUTPUT_SAMPLE_RATE: Final[Literal[24000]] = 24000
@@ -251,6 +256,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "transcription": {"model": "gpt-4o-transcribe", "language": "en"},
                                 "turn_detection": {
                                     "type": "server_vad",
+                                    "threshold": 0.7,
+                                    "silence_duration_ms": 800,
                                     "interrupt_response": True,
                                 },
                             },
@@ -338,6 +345,21 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle completed transcription (user finished speaking)
                 if event.type == "conversation.item.input_audio_transcription.completed":
+                    import reachy_mini_conversation_app.openai_realtime as _rt
+                    pending = _rt._pending_document_context
+                    if pending and self.connection:
+                        try:
+                            await self.connection.conversation.item.create(
+                                item={
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{"type": "input_text", "text": f"[DOCUMENT UPLOADED: {pending}]"}],
+                                }
+                            )
+                            _rt._pending_document_context = ""
+                            logger.info("Document content added to conversation")
+                        except Exception as inj_err:
+                            logger.warning(f"Doc injection failed: {inj_err}")
                     logger.debug(f"User transcript: {event.transcript}")
 
                     # Cancel any pending partial emission
@@ -347,6 +369,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             await self.partial_transcript_task
                         except asyncio.CancelledError:
                             pass
+                    last_user_text = event.transcript
                     conv.add("user", event.transcript)
                     prefs = extract_preferences(event.transcript)
                     if prefs.get("study_buddy_style"):
@@ -361,6 +384,18 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     logger.debug(f"Assistant transcript: {event.transcript}")
                     conv.add("assistant", event.transcript)
                     conv.save()
+                    try:
+                        profile = get_profile(user_id)
+                        log_turn(
+                            user_id=user_id,
+                            study_buddy_style=profile.get("study_buddy_style", ""),
+                            assertiveness=profile.get("assertiveness", ""),
+                            session={},
+                            user_text=last_user_text if "last_user_text" in dir() else "",
+                            assistant_text=event.transcript,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Metrics logging failed: {e}")
                     await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": event.transcript}))
 
                 # Handle audio delta
@@ -403,6 +438,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "output": json.dumps(tool_result),
                             },
                         )
+
 
                     await self.output_queue.put(
                         AdditionalOutputs(

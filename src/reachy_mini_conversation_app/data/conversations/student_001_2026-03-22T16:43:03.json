@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-22T16:43:03",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Check one two"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, ich hör dich laut und deutlich! Wie kann ich dir heute helfen? Geht’s um ein bestimmtes Thema beim Lernen, oder hast du gerade was anderes im Kopf?"
+    }
+  ]
+}

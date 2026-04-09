@@ -1,0 +1,34 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-19T15:46:53",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hallo hallo hallo."
+    },
+    {
+      "role": "user",
+      "content": "Hello"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, ich hör dich gut! Schön, dass du da bist. Woran wollen wir heute zusammen tüfteln?"
+    },
+    {
+      "role": "user",
+      "content": "Reaktiewe reuse-mawmongeboorte."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, also es geht um Gebäude. Magst du mir ein bisschen mehr sagen, was genau du dazu lernen willst? Geht's eher um Architektur, Statik, bestimmte Baust"
+    },
+    {
+      "role": "user",
+      "content": "Das ist jetzt wieder komisch."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles gut, wir kriegen das hin. Lass mal drei kleine Fragen klären, bevor wir richtig loslegen. Erstens: Geht’s um moderne Hochhäuser oder eher historische"
+    }
+  ]
+}

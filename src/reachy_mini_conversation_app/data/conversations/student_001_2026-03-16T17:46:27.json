@@ -1,0 +1,38 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-16T17:46:27",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hazrovići."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, hi! Schön, dass du da bist. Woran tüfteln wir heute zusammen? Erzähl mal, was ist das Thema, bei dem du Unterstützung brauchst?"
+    },
+    {
+      "role": "user",
+      "content": "Kan sy my sien?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ja, ich kann dich sehen. Also, wenn du magst, kann ich dir Feedback geben, wenn du zum Beispiel etwas aufschreibst oder wenn ich sehe, dass du vielleicht gerade unsicher bist. Willst du mir kurz sagen, woran du gerade arbeitest, damit ich dir besser helfen kann?"
+    },
+    {
+      "role": "user",
+      "content": "Wieviele Finger halt ich hoch?"
+    },
+    {
+      "role": "assistant",
+      "content": "Okay, ich schau mal genau hin. Du hältst gerade zwei Finger hoch, wenn ich das richtig sehe. Stimmt das so?"
+    },
+    {
+      "role": "user",
+      "content": "Wie viele Finger halte ich jetzt hoch?"
+    },
+    {
+      "role": "assistant",
+      "content": "Jetzt sehe ich drei Finger. Passt das für dich?"
+    }
+  ]
+}

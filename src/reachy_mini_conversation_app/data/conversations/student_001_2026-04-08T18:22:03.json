@@ -1,0 +1,22 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-04-08T18:22:03",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Alrici."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, schön dass du da bist! Ich bin Reachy, dein Lernbegleiter. Bevor wir starten, würde ich gerne kurz mehr über dich erfahren – damit ich dich heute so gut wie möglich unterstützen kann. Wie heißt du?"
+    },
+    {
+      "role": "user",
+      "content": "Thus,"
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, freut mich, dich kennenzulernen, Fabio! Was studierst du, und in welchem Semester bist du gerade?"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-16T17:11:57",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Haderici"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, schön, dass du da bist! Lass uns direkt loslegen. Was ist dein aktuelles Lernziel? Und bis wann willst du es erreichen?"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-19T16:43:58",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello Richie, kannst du mich hören?"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, klar, ich hör dich super! Alles deutlich und klar. Und bei dir, alles gut?"
+    }
+  ]
+}

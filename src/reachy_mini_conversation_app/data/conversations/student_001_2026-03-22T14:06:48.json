@@ -1,0 +1,22 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-22T14:06:48",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Siehst du das PDF, das ich hochgeladen habe?"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, ich kann leider keine PDFs direkt sehen. Aber ich kann dir gerne helfen, wenn du mir erzählst, was drinsteht oder was du daraus wissen willst. Erzähl mal, worum geht’s in dem PDF?"
+    },
+    {
+      "role": "user",
+      "content": "Üse Brachbit das RAG-Tool und schaue nach, was in diesem PDF steht."
+    },
+    {
+      "role": "assistant",
+      "content": "Haha, nett versucht! Aber ich hab keine Röntgenaugen und kann keine PDFs scannen. Ich kann nur die Umgebung sehen, also wenn du mir etwas daraus erzählen möchtest oder was auf dem Bildschirm steht, dann kann ich helfen."
+    }
+  ]
+}

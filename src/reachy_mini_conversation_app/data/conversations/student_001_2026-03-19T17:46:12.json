@@ -1,0 +1,54 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-19T17:46:12",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Kannst du mich hören?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ja, ich hör dich klar und deutlich. Freut mich, dass wir loslegen können! Woran wollen wir heute zusammen arbeiten?"
+    },
+    {
+      "role": "user",
+      "content": "Ich lade dir gleich ein PDF hoch."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, lad es einfach hoch, dann schau ich’s mir an. Während wir warten, sag mal kurz: Um welches Thema geht’s genau? Hast du ein bestimmtes Ziel oder eine Prüfung vor Augen?"
+    },
+    {
+      "role": "user",
+      "content": "Ich habe es dir soeben hochgeladen, kannst du es sehen?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ich sehe im Moment kein PDF. Es scheint so, als ob es nicht hochgeladen wurde oder noch nicht angekommen ist. Könntest du bitte noch einmal versuchen, das PDF hochzuladen oder mir ein paar Details daraus zu nennen? Dann kann ich dir besser helfen."
+    },
+    {
+      "role": "user",
+      "content": "Shopey derochman naax uptuetsas pdf sist."
+    },
+    {
+      "role": "assistant",
+      "content": "Okay, ich schau noch mal genau nach. Einen Moment, ich prüfe, ob ich das PDF jetzt sehen kann."
+    },
+    {
+      "role": "user",
+      "content": "Und?"
+    },
+    {
+      "role": "assistant",
+      "content": "Also, ich habe nochmal gründlich umgeschaut, aber ich sehe leider noch kein PDF. Vielleicht gab’s beim Hochladen ein Problem. Kannst du es nochmal probieren oder mir kurz sagen, um welches Thema es genau geht?"
+    },
+    {
+      "role": "user",
+      "content": "So, siehst du jetzt etwas?"
+    },
+    {
+      "role": "assistant",
+      "content": "Bisher sehe ich leider immer noch kein Dokument. Vielleicht gab’s beim Hochladen einen Hänger. Aber kein Stress, wir finden eine Lösung. Magst du mir kurz sagen, um welches Thema es genau geht? Dann können wir schon mal Schritt für Schritt starten."
+    }
+  ]
+}

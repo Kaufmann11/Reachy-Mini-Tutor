@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-19T15:49:33",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hala rici kasmihewan?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ja, ich kann Sie gut hören. Schön, dass Sie da sind. Lassen Sie uns direkt beginnen. Damit ich Ihnen optimal helfen kann, stellen Sie mir bitte kurz die wichtigsten Informationen zur Verfügung: Worum genau geht es bei Ihrem Thema, was ist Ihr konkretes Lernziel und wie sieht das Prüfungsformat aus?"
+    }
+  ]
+}

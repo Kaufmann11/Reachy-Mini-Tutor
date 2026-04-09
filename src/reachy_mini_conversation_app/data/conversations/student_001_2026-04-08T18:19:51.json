@@ -1,0 +1,50 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-04-08T18:19:51",
+  "messages": [
+    {
+      "role": "user",
+      "content": "م"
+    },
+    {
+      "role": "user",
+      "content": "large"
+    },
+    {
+      "role": "assistant",
+      "content": "Hallo! Ich bin Reachy, dein Lernbegleiter. Bevor wir starten, habe ich kurz ein paar Fragen. Wie heißt du?"
+    },
+    {
+      "role": "user",
+      "content": "Ayan's"
+    },
+    {
+      "role": "assistant",
+      "content": "Kein Problem, wir nehmen uns Zeit. Erzähl mir einfach deinen Namen, wenn du soweit bist."
+    },
+    {
+      "role": "user",
+      "content": "Yes, please"
+    },
+    {
+      "role": "assistant",
+      "content": "Alles gut, wir können jederzeit anfangen. Wie heißt du denn?"
+    },
+    {
+      "role": "user",
+      "content": "Hi!"
+    },
+    {
+      "role": "assistant",
+      "content": "Kein Stress, wir machen das ganz in deinem Tempo. Magst du mir einfach deinen Namen sagen, damit wir loslegen können?"
+    },
+    {
+      "role": "user",
+      "content": "No way."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, kein Problem, wir können auch jederzeit weitermachen, wenn du soweit bist. Wie heißt du denn?"
+    }
+  ]
+}

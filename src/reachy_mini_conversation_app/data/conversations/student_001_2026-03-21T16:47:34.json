@@ -1,0 +1,26 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-21T16:47:34",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hallo Richie."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, na, schön, dass du da bist! Woran tüfteln wir heute zusammen?"
+    },
+    {
+      "role": "user",
+      "content": "Ich habe dir soeben ein PDF hochgeladen."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, ich schau mir das PDF gleich mal an. Einen Moment."
+    },
+    {
+      "role": "assistant",
+      "content": "Hm, da scheint was nicht zu klappen mit dem PDF-Abruf. Aber kein Stress – sag mal, was ist denn dein Thema und was willst du heute erreichen? Zum Beispiel: Geht’s um eine Klausur, eine Hausarbeit oder einfach ein besseres Verständnis? Dann kommen wir gemeinsam voran."
+    }
+  ]
+}

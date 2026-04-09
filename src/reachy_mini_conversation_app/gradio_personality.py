@@ -11,7 +11,7 @@ from pathlib import Path
 import gradio as gr
 
 from .config import config
-from .tools.rag_tool import ingest_document
+from .tools.rag_tool import ingest_document, get_document_context
 
 
 class PersonalityUI:
@@ -104,7 +104,7 @@ class PersonalityUI:
         self.available_tools_cg = gr.CheckboxGroup(label="Available tools (helper)", choices=[], value=[])
         self.save_btn = gr.Button("Save personality (instructions + tools)")
         # RAG file upload
-        self.upload_label = gr.Markdown("### 📄Lecture Slides Upload")
+        self.upload_label = gr.Markdown("### 📄 Lecture Slides Upload")
         self.file_upload = gr.File(
             label="Upload PDF or PPTX",
             file_types=[".pdf", ".pptx", ".ppt"],
@@ -133,6 +133,7 @@ class PersonalityUI:
     # ---------- Event wiring ----------
     def wire_events(self, handler: Any, blocks: gr.Blocks) -> None:
         """Attach event handlers to components within a Blocks context."""
+        self._handler = handler
 
         async def _apply_personality(selected: str) -> tuple[str, str]:
             profile = None if selected == self.DEFAULT_OPTION else selected
@@ -262,12 +263,14 @@ class PersonalityUI:
             body = "\n".join(selected)
             out = ("\n".join(comments) + ("\n" if comments else "") + body).strip() + "\n"
             return gr.update(value=out)
-        
-        def _handle_upload(file: Any) -> str:
+
+        def _handle_upload(file):
             if file is None:
                 return ""
             try:
                 result = ingest_document(file.name)
+                import reachy_mini_conversation_app.openai_realtime as _rt
+                _rt._pending_document_context = get_document_context()
                 return f"✅ {result}"
             except Exception as e:
                 return f"❌ Upload failed: {e}"
@@ -319,6 +322,7 @@ class PersonalityUI:
                 inputs=[self.personalities_dropdown],
                 outputs=[self.status_md, self.preview_md],
             )
+
             self.file_upload.change(
                 fn=_handle_upload,
                 inputs=[self.file_upload],

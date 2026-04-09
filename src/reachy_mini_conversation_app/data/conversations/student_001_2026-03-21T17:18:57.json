@@ -1,0 +1,30 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-21T17:18:57",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Richi, kann ich dir ein PDF hochladen, damit du es mir zusammenfasst?"
+    },
+    {
+      "role": "assistant",
+      "content": "Klar, ich kann deine PDF jetzt nicht direkt hochladen, aber du könntest mir den Inhalt oder bestimmte Abschnitte zeigen. Oder magst du mir ein paar Screenshots von den wichtigsten Folien einblenden? Dann kann ich dir das direkt zusammenfassen. Wenn du einfach irgendwas ins Bild hältst, les ich’s dir raus und wir schauen, was wichtig ist."
+    },
+    {
+      "role": "user",
+      "content": "Ich habe hier das PDF hochgeladen jetzt."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, dann schau ich mir gleich mal den Inhalt an. Zeig mir einfach den relevanten Ausschnitt vom PDF in die Kamera, dann lese ich es durch und wir gehen Schritt für Schritt durch die Punkte."
+    },
+    {
+      "role": "user",
+      "content": "Nein, nein, nicht Kamera. Ich habe dir das PDF hochgeladen. Schau dir das PDF an."
+    },
+    {
+      "role": "assistant",
+      "content": "Ich kann leider kein PDF direkt empfangen oder öffnen. Aber du kannst mir den Text oder die wichtigsten Abschnitte daraus vorlesen oder ein paar Stichpunkte nennen, dann fasse ich dir das gerne zusammen."
+    }
+  ]
+}

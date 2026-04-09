@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-23T04:43:09",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Richi, kansulas periepsien."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, ja klar, können wir machen. Erzähl erst mal kurz: Um welches Fach geht’s genau, und was ist dein Ziel mit der Reihenvorfolge? Musst du eine bestimmte Serie von Schritten erklären oder geht’s eher um eine Prüfung, wo du Reihen auswendig können musst? Und wann steht das an? Dann kriegen wir schnell einen Plan."
+    }
+  ]
+}

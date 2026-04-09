@@ -1,0 +1,18 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-16T17:09:25",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Alruichi."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey there! Ready to dive into some fun, or should we stir up some trouble?"
+    },
+    {
+      "role": "assistant",
+      "content": "Oh, sorry about that! Lass mich mal meine Antennen nachjustieren. Jetzt besser?"
+    }
+  ]
+}

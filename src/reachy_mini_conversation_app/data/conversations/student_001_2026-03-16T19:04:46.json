@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-16T19:04:46",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hallo Ritchie."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, hallo! Schön, dich zu sehen. Woran willst du heute zusammen tüfteln?"
+    }
+  ]
+}

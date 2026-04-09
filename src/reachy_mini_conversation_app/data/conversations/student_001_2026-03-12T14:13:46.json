@@ -1,0 +1,38 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-12T14:13:46",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Luci."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, na! Schön, dass du da bist. Erzähl mal, woran willst du grad tüfteln? Was für ein Thema packen wir an?"
+    },
+    {
+      "role": "user",
+      "content": "I am."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, dann lass uns mal ein bisschen durchleuchten, was du brauchst. Ich hab ein paar Fragen, um richtig reinzukommen. Erstens: Um welches Fach oder Thema geht’s genau? Zweitens: Was ist dein konkretes Ziel – Hausarbeit fertigkriegen, Prüfung bestehen oder was anderes? Drittens: Wie viel Zeit hast du noch bis zur De"
+    },
+    {
+      "role": "user",
+      "content": "Good morning."
+    },
+    {
+      "role": "assistant",
+      "content": "Okay, kein Stress. Wir kriegen das schon hin. Lass uns das Schritt für Schritt machen. Also, was ist das Thema, bei dem du grad Unterstützung brauchst? Und was genau möchtest du am Ende erreichen?"
+    },
+    {
+      "role": "user",
+      "content": "Kannst du mich hören?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ja, ich hör dich klar und deutlich. Alles easy. Wir sind auf Sendung. Also, erzähl mal: Worum geht’s genau? Was willst du lernen oder klären?"
+    }
+  ]
+}

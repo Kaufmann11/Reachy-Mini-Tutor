@@ -1,0 +1,14 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-19T15:51:59",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hallo, hallo, hallo, Test, Test, Test!"
+    },
+    {
+      "role": "assistant",
+      "content": "Guten Tag! Ich höre Sie klar und deutlich. Lassen Sie uns direkt einsteigen. Könnten Sie mir bitte kurz beschreiben, woran Sie heute arbeiten möchten, und welches Ziel Sie sich gesetzt haben?"
+    }
+  ]
+}

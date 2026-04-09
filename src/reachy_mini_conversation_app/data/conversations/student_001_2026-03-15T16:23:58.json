@@ -1,0 +1,70 @@
+{
+  "user_id": "student_001",
+  "started_at": "2026-03-15T16:23:58",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Alaricchi."
+    },
+    {
+      "role": "assistant",
+      "content": "Hey, hi! Schön, dass du da bist. Was geht bei dir? Woran möchtest du heute zusammen tüfteln?"
+    },
+    {
+      "role": "user",
+      "content": "Kannst du mich gut hören?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ja, ich kann dich gut hören. Deine Stimme kommt klar rüber. Wenn du magst, sag einfach, was du vorhast, und wir legen los."
+    },
+    {
+      "role": "user",
+      "content": "Ich brauche Unterstützung."
+    },
+    {
+      "role": "user",
+      "content": "In einem Mathematikmodul."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, wir kriegen das hin. Erzähl mal, was genau brauchst du gerade? Geht’s eher um Analysis, Lineare Algebra oder was anderes? Und steht eine Prüfung an?"
+    },
+    {
+      "role": "user",
+      "content": "Asidaney Priyfuwang."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, eine Prüfung also. Wann ist der Termin? Und zu welchem Thema genau brauchst du Unterstützung?"
+    },
+    {
+      "role": "user",
+      "content": "Ich habe kurz eine andere Frage, wenn du etwas nicht weißt und nachschauen musst."
+    },
+    {
+      "role": "user",
+      "content": "Bist dann transparent und gibst an, dass du es im Internet nachschauen musst?"
+    },
+    {
+      "role": "assistant",
+      "content": "Klar, ich bin immer transparent. Wenn ich was nicht weiß oder nachschauen muss, sag ich dir Bescheid. Ist ja wie bei einem echten Lernpartner, oder? So bauen wir zusammen Schritt für Schritt Wissen auf. Lass uns jetzt dein Mathethema knacken. Worauf genau willst du dich fokussieren?"
+    },
+    {
+      "role": "user",
+      "content": "Integralrechnung."
+    },
+    {
+      "role": "assistant",
+      "content": "Ah, Integralrechnung, alles klar. Wann ist die Prüfung? Und geht’s dir mehr um bestimmte Techniken, wie partielle Integration, oder eher um Anwendungen?"
+    },
+    {
+      "role": "user",
+      "content": "Die Prüfung ist bereits morgen und nein, es geht mir mehr um ein allgemeines Verständnis."
+    },
+    {
+      "role": "assistant",
+      "content": "Alles klar, morgen – da haben wir noch ein bisschen Zeit, um dir ein klares Bild zu verschaffen. Ich schlag mal einen Plan vor:\n\n1. Kurzer Check, wie sicher du mit Stammfunktionen bist.  \n2. Dann schauen wir auf Hauptsatz der Differential- und Integralrechnung.  \n3. Und zum Schluss üben wir eine typische Integralaufgabe.\n\nPasst das so für dich?"
+    }
+  ]
+}
