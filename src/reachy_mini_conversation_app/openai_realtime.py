@@ -253,7 +253,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "type": "audio/pcm",
                                     "rate": self.input_sample_rate,
                                 },
-                                "transcription": {"model": "gpt-4o-transcribe", "language": "en"},
+                                "transcription": {"model": "gpt-4o-transcribe"},
                                 "turn_detection": {
                                     "type": "server_vad",
                                     "threshold": 0.7,

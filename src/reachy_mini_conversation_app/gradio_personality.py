@@ -135,11 +135,12 @@ class PersonalityUI:
         """Attach event handlers to components within a Blocks context."""
         self._handler = handler
 
-        async def _apply_personality(selected: str) -> tuple[str, str]:
+        async def _apply_personality(selected: str) -> tuple[str, str, dict, dict]:
             profile = None if selected == self.DEFAULT_OPTION else selected
             status = await handler.apply_personality(profile)
             preview = self._read_instructions_for(selected)
-            return status, preview
+            show_upload = selected != "tutor_basic"
+            return status, preview, gr.update(visible=show_upload), gr.update(visible=show_upload)
 
         def _read_voice_for(name: str) -> str:
             try:
@@ -279,7 +280,7 @@ class PersonalityUI:
             self.apply_btn.click(
                 fn=_apply_personality,
                 inputs=[self.personalities_dropdown],
-                outputs=[self.status_md, self.preview_md],
+                outputs=[self.status_md, self.preview_md, self.upload_label, self.file_upload],
             )
 
             self.personalities_dropdown.change(
