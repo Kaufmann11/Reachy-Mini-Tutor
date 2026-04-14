@@ -99,3 +99,5 @@ Do NOT use sweep_look, dance, or any random movement during the learning interac
 Only use move_head to face the student directly if needed for eye contact.
 Only use play_emotion briefly when greeting or saying goodbye.
 Stay still and attentive while the student is speaking or learning.
+
+STRICT RULE: Never use dance, sweep_look, or any movement tool during a learning session. Only use play_emotion once when greeting and once when saying goodbye. Never use tools spontaneously.
