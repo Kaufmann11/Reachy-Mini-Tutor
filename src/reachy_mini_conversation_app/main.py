@@ -86,8 +86,6 @@ def run(
         except Exception as e:
             if "Camera" in str(e) or "camera" in str(e):
                 logger.warning("Camera not available, continuing without camera.")
-                from reachy_mini import ReachyMini
-                robot = ReachyMini(media_backend="sounddevice_only", **robot_kwargs)
             else:
                 logger.error(
                     f"Unexpected error during robot initialization: {type(e).__name__}: {e}"
@@ -96,7 +94,7 @@ def run(
                 sys.exit(1)
 
     # Check if running in simulation mode without --gradio
-    if robot.client.get_status()["simulation_enabled"] and not args.gradio:
+    if robot is not None and robot.client.get_status()["simulation_enabled"] and not args.gradio:
         logger.error(
             "Simulation mode requires Gradio interface. Please use --gradio flag when running in simulation mode."
         )

@@ -19,19 +19,17 @@ dependencies = [
     "pypdf>=4.0",
     "python-pptx>=0.6.23",
     "faiss-cpu>=1.7.4",
-
     #Environment variables
     "python-dotenv",
-
     #OpenAI
     "openai>=2.1",
-
     #Reachy mini
     "reachy_mini_dances_library",
     "reachy_mini_toolbox",
     "reachy-mini >= 1.2.11",
     "eclipse-zenoh~=1.7.0",
     "gradio_client>=1.13.3",
+    "mujoco==3.3.0",
 ]
 
 [project.optional-dependencies]
