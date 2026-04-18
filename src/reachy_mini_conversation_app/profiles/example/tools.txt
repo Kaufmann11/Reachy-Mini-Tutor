@@ -1,11 +1,11 @@
 # SELECT THE TOOLS YOU WANT TO ENABLE
 
-stop_dance
-stop_emotion
 # camera
 # do_nothing
 # head_tracking
 # move_head
+# play_emotion
+# stop_emotion
 
 # AN EXAMPLE OF A CUSTOM TOOL DEFINED LOCALLY
 # sweep_look
