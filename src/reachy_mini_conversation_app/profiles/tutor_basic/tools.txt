@@ -1,2 +1,4 @@
 camera
 head_tracking
+play_emotion
+stop_emotion
