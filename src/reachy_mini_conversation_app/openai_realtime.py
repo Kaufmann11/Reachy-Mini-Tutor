@@ -71,6 +71,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.last_activity_time = asyncio.get_event_loop().time()
         self.start_time = asyncio.get_event_loop().time()
         self.is_idle_tool_call = False
+        self._had_audio_in_response = False  # tracks whether current response produced audio
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -326,6 +327,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if event.type == "response.done":
                     # Doesn't mean the audio is done playing
                     logger.debug("Response done")
+                    # Auto-trigger a subtle head movement after every spoken response.
+                    # This runs regardless of whether the model called a movement tool,
+                    # so the robot always animates while speaking.
+                    if self._had_audio_in_response and not self.is_idle_tool_call:
+                        self._had_audio_in_response = False
+                        direction = random.choice(["left", "right", "up", "front", "front"])
+                        try:
+                            await dispatch_tool_call(
+                                "move_head", json.dumps({"direction": direction}), self.deps
+                            )
+                        except Exception:
+                            pass  # silently ignore if robot not connected
+                    else:
+                        self._had_audio_in_response = False
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -405,6 +420,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle audio delta
                 if event.type in ("response.audio.delta", "response.output_audio.delta"):
+                    self._had_audio_in_response = True
                     if self.deps.head_wobbler is not None:
                         self.deps.head_wobbler.feed(event.delta)
                     self.last_activity_time = asyncio.get_event_loop().time()
