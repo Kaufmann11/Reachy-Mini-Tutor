@@ -333,12 +333,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if self._had_audio_in_response and not self.is_idle_tool_call:
                         self._had_audio_in_response = False
                         direction = random.choice(["left", "right", "up", "front", "front"])
+                        logger.info("Auto move_head: direction=%s", direction)
                         try:
-                            await dispatch_tool_call(
+                            result = await dispatch_tool_call(
                                 "move_head", json.dumps({"direction": direction}), self.deps
                             )
-                        except Exception:
-                            pass  # silently ignore if robot not connected
+                            logger.info("Auto move_head result: %s", result)
+                        except Exception as e:
+                            logger.warning("Auto move_head exception: %s", e)
                     else:
                         self._had_audio_in_response = False
 
