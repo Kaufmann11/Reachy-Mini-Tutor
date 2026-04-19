@@ -27,6 +27,18 @@ from reachy_mini_conversation_app.tools.core_tools import (
     dispatch_tool_call,
 )
 
+# Physical/animation tools that need no verbal acknowledgement.
+# After executing these, we do NOT call response.create() so the current
+# audio stream plays to completion without interruption.
+SILENT_TOOLS: frozenset[str] = frozenset({
+    "play_emotion",
+    "stop_emotion",
+    "dance",
+    "stop_dance",
+    "move_head",
+    "head_tracking",
+})
+
 
 logger = logging.getLogger(__name__)
 
@@ -452,10 +464,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 ),
                             )
 
-                    # if this tool call was triggered by an idle signal, don't make the robot speak
-                    # for other tool calls, let the robot reply out loud
+                    # Decide whether to generate a speech follow-up after the tool call.
+                    # - Idle tool calls: never speak (robot initiated the call itself)
+                    # - Silent tools (physical/animation): never speak so the audio that
+                    #   was already queued before the tool call plays to completion without
+                    #   interruption.  The emotion/movement runs in the background.
+                    # - Everything else: ask the model to answer using the tool result.
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
+                    elif tool_name in SILENT_TOOLS:
+                        pass  # let current audio finish; no new speech turn needed
                     else:
                         await self.connection.response.create(
                             response={
