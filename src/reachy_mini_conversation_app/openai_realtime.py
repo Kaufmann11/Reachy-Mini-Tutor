@@ -28,11 +28,6 @@ from reachy_mini_conversation_app.tools.core_tools import (
     dispatch_tool_call,
 )
 
-# Physical/animation tools — no verbal follow-up needed.
-# Skipping response.create() lets the current audio finish without interruption.
-SILENT_TOOLS: frozenset[str] = frozenset({
-    "play_emotion", "stop_emotion", "dance", "stop_dance", "move_head", "head_tracking",
-})
 
 logger = logging.getLogger(__name__)
 _pending_document_context: str = ""  # Module-level for cross-instance access
@@ -71,7 +66,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.last_activity_time = asyncio.get_event_loop().time()
         self.start_time = asyncio.get_event_loop().time()
         self.is_idle_tool_call = False
-        self._had_audio_in_response = False  # tracks whether current response produced audio
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -327,22 +321,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if event.type == "response.done":
                     # Doesn't mean the audio is done playing
                     logger.debug("Response done")
-                    # Auto-trigger a subtle head movement after every spoken response.
-                    # This runs regardless of whether the model called a movement tool,
-                    # so the robot always animates while speaking.
-                    if self._had_audio_in_response and not self.is_idle_tool_call:
-                        self._had_audio_in_response = False
-                        direction = random.choice(["left", "right", "up", "front", "front"])
-                        logger.info("Auto move_head: direction=%s", direction)
-                        try:
-                            result = await dispatch_tool_call(
-                                "move_head", json.dumps({"direction": direction}), self.deps
-                            )
-                            logger.info("Auto move_head result: %s", result)
-                        except Exception as e:
-                            logger.warning("Auto move_head exception: %s", e)
-                    else:
-                        self._had_audio_in_response = False
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -422,7 +400,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle audio delta
                 if event.type in ("response.audio.delta", "response.output_audio.delta"):
-                    self._had_audio_in_response = True
                     if self.deps.head_wobbler is not None:
                         self.deps.head_wobbler.feed(event.delta)
                     self.last_activity_time = asyncio.get_event_loop().time()
@@ -513,12 +490,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                     # if this tool call was triggered by an idle signal, don't make the robot speak
                     # for other tool calls, let the robot reply out loud
-                    # for silent (physical/animation) tools, skip response.create() so the
-                    # current audio plays to completion without interruption
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
-                    elif tool_name in SILENT_TOOLS:
-                        pass  # emotion/movement runs in background; audio continues uninterrupted
                     else:
                         await self.connection.response.create(
                             response={
