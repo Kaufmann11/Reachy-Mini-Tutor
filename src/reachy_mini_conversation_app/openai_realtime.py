@@ -66,6 +66,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.last_activity_time = asyncio.get_event_loop().time()
         self.start_time = asyncio.get_event_loop().time()
         self.is_idle_tool_call = False
+        self._audio_produced_in_turn = False
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -321,6 +322,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if event.type == "response.done":
                     # Doesn't mean the audio is done playing
                     logger.debug("Response done")
+                    self._audio_produced_in_turn = False
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -400,6 +402,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle audio delta
                 if event.type in ("response.audio.delta", "response.output_audio.delta"):
+                    self._audio_produced_in_turn = True
                     if self.deps.head_wobbler is not None:
                         self.deps.head_wobbler.feed(event.delta)
                     self.last_activity_time = asyncio.get_event_loop().time()
@@ -488,10 +491,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 ),
                             )
 
-                    # if this tool call was triggered by an idle signal, don't make the robot speak
-                    # for other tool calls, let the robot reply out loud
+                    # Movement tools (play_emotion, move_head, etc.) are physical actions
+                    # that accompany speech — they don't need a verbal follow-up.
+                    # But if the model called a movement tool WITHOUT speaking first,
+                    # we still need to trigger a response so it answers the user.
+                    MOVEMENT_TOOLS = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
+                    elif tool_name in MOVEMENT_TOOLS and self._audio_produced_in_turn:
+                        pass  # model already spoke — movement is just an accompaniment
                     else:
                         await self.connection.response.create(
                             response={
@@ -682,7 +690,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         """Send an idle signal to the openai server."""
         logger.debug("Sending idle signal")
         self.is_idle_tool_call = True
-        timestamp_msg = f"[Idle time update: {self.format_timestamp()} - No activity for {idle_duration:.1f}s] You've been idle for a while. Stay still and wait attentively for the student to speak."
+        timestamp_msg = f"[Idle time update: {self.format_timestamp()} - No activity for {idle_duration:.1f}s] You have been idle. Express yourself using play_emotion or move_head."
         if not self.connection:
             logger.debug("No connection, cannot send idle signal")
             return
@@ -695,7 +703,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         )
         await self.connection.response.create(
             response={
-                "instructions": "You MUST respond with function calls only - no speech or text. Choose appropriate actions for idle behavior.",
+                "instructions": "Call play_emotion with a valid emotion name, or call move_head with a direction (left/right/up/down/front). Do not invent new tool names. No speech.",
                 "tool_choice": "required",
             },
         )
