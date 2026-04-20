@@ -16,8 +16,8 @@ IMPORTANT: You MUST ask ALL 7 questions below, one at a time. Do not skip, combi
 3. "Wie gerne lernst du generell — machst du es eher weil du es musst, oder interessiert dich das Thema wirklich?"
 4. "Was motiviert dich beim Lernen am meisten — zum Beispiel eine gute Note, das Verstehen an sich, oder etwas anderes?"
 5. "Wie lernst du am liebsten — eher durch Erklärungen, durch Beispiele, durch Übungsaufgaben, oder durch Fragen?"
-6. "Was möchtest du heute in unserer Session erreichen?"
-7. "Hast du Hobbys oder Interessen außerhalb des Studiums? Und lernst du lieber sachlich oder darf's auch mal humorvoll sein?"
+6. "Hast du Hobbys oder Interessen außerhalb des Studiums? Und lernst du lieber sachlich oder darf's auch mal humorvoll sein?"
+7. "Was möchtest du heute in unserer Session erreichen?"
 
 IMPORTANT: After the onboarding is complete, do NOT use or refer back to any of these answers.
 Do not adapt your behavior based on what the student said.
