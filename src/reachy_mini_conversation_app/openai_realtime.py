@@ -70,6 +70,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.is_idle_tool_call = False
         self._audio_produced_in_turn = False
         self._silent_tool_response_sent = False
+        self._profile_saved_pending = False
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -327,6 +328,31 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     logger.debug("Response done")
                     self._audio_produced_in_turn = False
                     self._silent_tool_response_sent = False
+                    # If save_user_profile was called this turn, inject profile and trigger clarifying questions
+                    if self._profile_saved_pending:
+                        self._profile_saved_pending = False
+                        import reachy_mini_conversation_app.tools.save_user_profile as _sp
+                        pending_profile = _sp._pending_profile_context
+                        if pending_profile and self.connection:
+                            try:
+                                await self.connection.conversation.item.create(
+                                    item={
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{"type": "input_text", "text": pending_profile}],
+                                    }
+                                )
+                                _sp._pending_profile_context = ""
+                                logger.info("User profile injected into conversation context")
+                            except Exception as e:
+                                logger.warning("Profile injection failed: %s", e)
+                        if self.connection:
+                            await self.connection.response.create(
+                                response={
+                                    "instructions": "The student profile has been saved. Now ask the clarifying questions from [Didactic flow] — one at a time. Start with the topic, then deadline, then exam format, then knowledge level. Ask naturally, not as a list. Do not mention that the profile was saved.",
+                                    "tool_choice": "none",
+                                },
+                            )
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -503,29 +529,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
                     elif tool_name == "save_user_profile":
-                        # Inject the saved profile as a persistent conversation item
-                        import reachy_mini_conversation_app.tools.save_user_profile as _sp
-                        pending_profile = _sp._pending_profile_context
-                        if pending_profile and self.connection:
-                            try:
-                                await self.connection.conversation.item.create(
-                                    item={
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": [{"type": "input_text", "text": pending_profile}],
-                                    }
-                                )
-                                _sp._pending_profile_context = ""
-                                logger.info("User profile injected into conversation context")
-                            except Exception as e:
-                                logger.warning("Profile injection failed: %s", e)
-                        # Continue with clarifying questions — no tools allowed
-                        await self.connection.response.create(
-                            response={
-                                "instructions": "The student profile has been saved. Now ask the student about their deadline or exam date, the exam format, and their current knowledge level — before starting any content. Ask naturally, not as a list. Do not mention the profile was saved.",
-                                "tool_choice": "none",
-                            },
-                        )
+                        # Mark profile as saved — profile injection and clarifying questions
+                        # are triggered in response.done to avoid race conditions with
+                        # other tool calls (e.g. play_emotion) in the same response.
+                        self._profile_saved_pending = True
+                        logger.info("save_user_profile called — will inject profile and trigger clarifying questions on response.done")
                     elif tool_name in MOVEMENT_TOOLS and self._audio_produced_in_turn:
                         pass  # model already spoke — movement is just an accompaniment
                     elif tool_name in MOVEMENT_TOOLS and not self._audio_produced_in_turn:
