@@ -522,7 +522,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # Continue with clarifying questions — no tools allowed
                         await self.connection.response.create(
                             response={
-                                "instructions": "The student profile has been saved. Now proceed with the clarifying questions from your [Didactic flow] instructions before starting content. Do not mention the profile was saved.",
+                                "instructions": "The student profile has been saved. Now ask the student about their deadline or exam date, the exam format, and their current knowledge level — before starting any content. Ask naturally, not as a list. Do not mention the profile was saved.",
                                 "tool_choice": "none",
                             },
                         )

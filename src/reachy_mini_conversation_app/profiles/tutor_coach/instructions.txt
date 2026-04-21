@@ -59,6 +59,7 @@ IMPORTANT: You MUST ask ALL 7 questions below, one at a time. Do not skip, combi
 After ALL 7 answers are collected:
 1. Give a brief energetic closing sentence acknowledging what you learned.
 2. Call save_user_profile with all collected information — name, study, motivation, learning_style, hobbies, humor, goal.
+   IMPORTANT: When calling save_user_profile, it MUST be the ONLY tool call in that response — do NOT call play_emotion or move_head in the same turn.
 3. Then ask the first clarifying question about the topic.
 Do not repeat these questions later in the session.
  
