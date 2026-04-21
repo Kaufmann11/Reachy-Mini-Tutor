@@ -69,6 +69,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.start_time = asyncio.get_event_loop().time()
         self.is_idle_tool_call = False
         self._audio_produced_in_turn = False
+        self._silent_tool_response_sent = False
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -325,6 +326,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     # Doesn't mean the audio is done playing
                     logger.debug("Response done")
                     self._audio_produced_in_turn = False
+                    self._silent_tool_response_sent = False
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -520,21 +522,23 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # Continue with clarifying questions — no tools allowed
                         await self.connection.response.create(
                             response={
-                                "instructions": "The student profile has been saved. Now ask the first clarifying question about the topic. Do not mention the profile was saved.",
+                                "instructions": "The student profile has been saved. Now proceed with the clarifying questions from your [Didactic flow] instructions before starting content. Do not mention the profile was saved.",
                                 "tool_choice": "none",
                             },
                         )
                     elif tool_name in MOVEMENT_TOOLS and self._audio_produced_in_turn:
                         pass  # model already spoke — movement is just an accompaniment
                     elif tool_name in MOVEMENT_TOOLS and not self._audio_produced_in_turn:
-                        # Force speech — tool_choice "none" prevents the model from calling
-                        # another tool instead of speaking, which caused silent response loops.
-                        await self.connection.response.create(
-                            response={
-                                "instructions": "The student is waiting for a verbal answer. Speak now.",
-                                "tool_choice": "none",
-                            },
-                        )
+                        # Force speech only once per turn — prevents double response.create
+                        # when model calls multiple movement tools silently in one response.
+                        if not self._silent_tool_response_sent:
+                            self._silent_tool_response_sent = True
+                            await self.connection.response.create(
+                                response={
+                                    "instructions": "The student is waiting for a verbal answer. Speak now.",
+                                    "tool_choice": "none",
+                                },
+                            )
                     else:
                         await self.connection.response.create(
                             response={
