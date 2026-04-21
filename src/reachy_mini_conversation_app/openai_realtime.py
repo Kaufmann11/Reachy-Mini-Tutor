@@ -30,10 +30,12 @@ from reachy_mini_conversation_app.tools.core_tools import (
 
 
 logger = logging.getLogger(__name__)
-_pending_document_context: str = ""  # Module-level for cross-instance access
 
 # Module-level document context for PDF injection
 _pending_document_context: str = ""
+
+# Module-level user profile context injected after onboarding (V1 profiles only)
+_pending_user_profile: str = ""
 
 OPEN_AI_INPUT_SAMPLE_RATE: Final[Literal[24000]] = 24000
 OPEN_AI_OUTPUT_SAMPLE_RATE: Final[Literal[24000]] = 24000
@@ -498,6 +500,30 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     MOVEMENT_TOOLS = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
+                    elif tool_name == "save_user_profile":
+                        # Inject the saved profile as a persistent conversation item
+                        import reachy_mini_conversation_app.tools.save_user_profile as _sp
+                        pending_profile = _sp._pending_profile_context
+                        if pending_profile and self.connection:
+                            try:
+                                await self.connection.conversation.item.create(
+                                    item={
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{"type": "input_text", "text": pending_profile}],
+                                    }
+                                )
+                                _sp._pending_profile_context = ""
+                                logger.info("User profile injected into conversation context")
+                            except Exception as e:
+                                logger.warning("Profile injection failed: %s", e)
+                        # Continue with clarifying questions — no tools allowed
+                        await self.connection.response.create(
+                            response={
+                                "instructions": "The student profile has been saved. Now ask the first clarifying question about the topic. Do not mention the profile was saved.",
+                                "tool_choice": "none",
+                            },
+                        )
                     elif tool_name in MOVEMENT_TOOLS and self._audio_produced_in_turn:
                         pass  # model already spoke — movement is just an accompaniment
                     elif tool_name in MOVEMENT_TOOLS and not self._audio_produced_in_turn:
