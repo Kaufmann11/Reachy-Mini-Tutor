@@ -73,7 +73,7 @@ def ingest_document(file_path: str) -> str:
     _index.add(embeddings)
 
     global _document_context
-    preview = _chunks[:6]
+    preview = _chunks[:30]
     _document_context = f"Student uploaded: '{_source_name}'. Content:\n\n" + "\n\n---\n\n".join(preview)
     return f"Document '{_source_name}' loaded: {len(_chunks)} sections indexed and ready."
 
