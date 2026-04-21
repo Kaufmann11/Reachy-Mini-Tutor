@@ -501,15 +501,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     elif tool_name in MOVEMENT_TOOLS and self._audio_produced_in_turn:
                         pass  # model already spoke — movement is just an accompaniment
                     elif tool_name in MOVEMENT_TOOLS and not self._audio_produced_in_turn:
+                        # Force speech — tool_choice "none" prevents the model from calling
+                        # another tool instead of speaking, which caused silent response loops.
                         await self.connection.response.create(
                             response={
-                                "instructions": "The student is waiting for a verbal answer. Speak now — do not call any tools.",
+                                "instructions": "The student is waiting for a verbal answer. Speak now.",
+                                "tool_choice": "none",
                             },
                         )
                     else:
                         await self.connection.response.create(
                             response={
                                 "instructions": "Use the tool result just returned and answer concisely in speech.",
+                                "tool_choice": "none",
                             },
                         )
 
