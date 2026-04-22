@@ -71,6 +71,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._audio_produced_in_turn = False
         self._silent_tool_response_sent = False
         self._profile_saved_pending = False
+        self._onboarding_answers: list[str] = []
+        self._onboarding_complete = False
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -328,31 +330,39 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     logger.debug("Response done")
                     self._audio_produced_in_turn = False
                     self._silent_tool_response_sent = False
-                    # If save_user_profile was called this turn, inject profile and trigger clarifying questions
-                    if self._profile_saved_pending:
-                        self._profile_saved_pending = False
-                        import reachy_mini_conversation_app.tools.save_user_profile as _sp
-                        pending_profile = _sp._pending_profile_context
-                        if pending_profile and self.connection:
-                            try:
-                                await self.connection.conversation.item.create(
-                                    item={
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": [{"type": "input_text", "text": pending_profile}],
-                                    }
-                                )
-                                _sp._pending_profile_context = ""
-                                logger.info("User profile injected into conversation context")
-                            except Exception as e:
-                                logger.warning("Profile injection failed: %s", e)
-                        if self.connection:
-                            await self.connection.response.create(
-                                response={
-                                    "instructions": "The student profile has been saved. Now ask the clarifying questions from [Didactic flow] — one at a time. Start with the topic, then deadline, then exam format, then knowledge level. Ask naturally, not as a list. Do not mention that the profile was saved.",
-                                    "tool_choice": "none",
-                                },
+                    self._profile_saved_pending = False
+                    # Auto-trigger clarifying questions after 7 onboarding answers (V1 profiles only)
+                    # This runs independently of whether the model called save_user_profile.
+                    V1_PROFILES = {"tutor_buddy", "tutor_coach", "tutor_professor", "tutor_socratic"}
+                    current_profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+                    if (
+                        not self._onboarding_complete
+                        and len(self._onboarding_answers) >= 7
+                        and current_profile in V1_PROFILES
+                        and self.connection
+                    ):
+                        self._onboarding_complete = True
+                        # Build LERNPROFIL from raw onboarding answers
+                        labels = ["Name", "Studium/Semester", "Lernmotivation", "Motivator", "Lernstil", "Hobbys+Humor", "Session-Ziel"]
+                        profile_lines = [f"- {labels[i]}: {self._onboarding_answers[i]}" for i in range(7)]
+                        profile_text = "[LERNPROFIL — Onboarding:\n" + "\n".join(profile_lines) + "]"
+                        try:
+                            await self.connection.conversation.item.create(
+                                item={
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{"type": "input_text", "text": profile_text}],
+                                }
                             )
+                            logger.info("Auto-injected onboarding profile after 7 answers")
+                        except Exception as e:
+                            logger.warning("Auto profile injection failed: %s", e)
+                        await self.connection.response.create(
+                            response={
+                                "instructions": "Onboarding is complete. Ask the clarifying questions from [Didactic flow] one at a time: first the topic, then deadline, then exam format, then knowledge level. Ask naturally, not as a list. Do not summarize the onboarding.",
+                                "tool_choice": "none",
+                            },
+                        )
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -403,6 +413,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             pass
                     last_user_text = event.transcript
                     conv.add("user", event.transcript)
+                    # Track onboarding answers (first 7 user messages in V1 profiles)
+                    if not self._onboarding_complete and len(self._onboarding_answers) < 7:
+                        self._onboarding_answers.append(event.transcript)
+                        logger.debug("Onboarding answer %d/7 recorded", len(self._onboarding_answers))
                     prefs = extract_preferences(event.transcript)
                     if prefs.get("study_buddy_style"):
                         set_style(user_id, prefs["study_buddy_style"])
