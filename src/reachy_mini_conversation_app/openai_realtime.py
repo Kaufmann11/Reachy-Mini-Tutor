@@ -40,13 +40,13 @@ V1_PROFILES: frozenset[str] = frozenset({"tutor_buddy", "tutor_coach", "tutor_pr
 # Explicit instruction passed to response.create for each onboarding question.
 # Code owns the flow — no flow logic lives in the session instructions.
 _ONBOARDING_Q_INSTRUCTIONS: dict[int, str] = {
-    1: "Sag genau: 'Hallo! Ich bin Reachy, dein Lernbegleiter. Bevor wir starten, habe ich kurz ein paar Fragen.' und frage dann: 'Wie heißt du?' — nur diese Frage, keine weiteren Kommentare.",
-    2: "Frage jetzt NUR: 'Was studierst du, und in welchem Semester bist du gerade?' — keine Einleitung, nur diese Frage.",
-    3: "Frage jetzt NUR: 'Wie gerne lernst du generell — machst du es eher weil du es musst, oder interessiert dich das Thema wirklich?' — nur diese Frage.",
-    4: "Frage jetzt NUR: 'Was motiviert dich beim Lernen am meisten — zum Beispiel eine gute Note, das Verstehen an sich, oder etwas anderes?' — nur diese Frage.",
-    5: "Frage jetzt NUR: 'Wie lernst du am liebsten — eher durch Erklärungen, durch Beispiele, durch Übungsaufgaben, oder durch Fragen?' — nur diese Frage.",
-    6: "Frage jetzt NUR: 'Hast du Hobbys oder Interessen außerhalb des Studiums? Und lernst du lieber sachlich oder darf's auch mal humorvoll sein?' — nur diese Frage.",
-    7: "Frage jetzt NUR: 'Was möchtest du heute in unserer Session erreichen?' — nur diese Frage, keine Zusammenfassung, keine Einleitung.",
+    1: "Sage exakt: 'Hallo! Ich bin Reachy, dein Lernbegleiter. Bevor wir starten, habe ich kurz ein paar Fragen. Wie heißt du?' — kein Wort mehr, kein Wort weniger.",
+    2: "Sage exakt: 'Was studierst du, und in welchem Semester bist du gerade?' — kein Kommentar davor, kein Kommentar danach.",
+    3: "Sage exakt: 'Wie gerne lernst du generell — machst du es eher weil du es musst, oder interessiert dich das Thema wirklich?' — kein Kommentar davor oder danach.",
+    4: "Sage exakt: 'Was motiviert dich beim Lernen am meisten — zum Beispiel eine gute Note, das Verstehen an sich, oder etwas anderes?' — kein Kommentar davor oder danach.",
+    5: "Sage exakt: 'Wie lernst du am liebsten — eher durch Erklärungen, durch Beispiele, durch Übungsaufgaben, oder durch Fragen?' — kein Kommentar davor oder danach.",
+    6: "Sage exakt: 'Hast du Hobbys oder Interessen außerhalb des Studiums? Und lernst du lieber sachlich oder darf's auch mal humorvoll sein?' — kein Kommentar davor oder danach.",
+    7: "Sage exakt: 'Was möchtest du heute in unserer Session erreichen?' — kein Kommentar davor oder danach.",
 }
 
 _ONBOARDING_LABELS: dict[int, str] = {
@@ -540,10 +540,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     await self.connection.response.create(
                                         response={
                                             "instructions": (
-                                                "Das Onboarding ist abgeschlossen. Frage jetzt kurz nach: "
-                                                "Was genau möchte der Student heute erreichen, und gibt es eine Deadline oder Abgabe? "
-                                                "Keine Prüfungs-Annahmen. Danach: Was ist sein aktueller Wissensstand zu dem Thema? "
-                                                "Noch nicht lehren."
+                                                "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese zwei Fragen — eine nach der anderen, in einer Antwort: "
+                                                "1. 'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
+                                                "2. 'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
+                                                "Stelle beide Fragen kurz und natürlich. Keine Prüfungs-Annahmen. Noch nicht lehren."
                                             ),
                                             "tool_choice": "auto",
                                         }
@@ -575,8 +575,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             )
                     else:
                         # Tutoring phase or non-tutor profile: normal response
+                        # Hint: speak first, then call movement tool — reduces move_head-only responses
                         if self.connection:
-                            await self.connection.response.create(response={})
+                            await self.connection.response.create(
+                                response={"instructions": "Antworte dem Studenten. Sprich zuerst aus, dann Bewegung.", "tool_choice": "auto"}
+                            )
 
                 # Handle assistant transcription
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
