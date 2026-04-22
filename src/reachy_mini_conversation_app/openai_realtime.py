@@ -495,10 +495,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             pass
                     last_user_text = event.transcript
                     conv.add("user", event.transcript)
-                    # Track onboarding answers (first 7 user messages in V1 profiles)
-                    if not self._onboarding_complete and len(self._onboarding_answers) < 7:
-                        self._onboarding_answers.append(event.transcript)
-                        logger.debug("Onboarding answer %d/7 recorded", len(self._onboarding_answers))
                     prefs = extract_preferences(event.transcript)
                     if prefs.get("study_buddy_style"):
                         set_style(user_id, prefs["study_buddy_style"])
