@@ -360,13 +360,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         await self.connection.response.create(
                             response={
                                 "instructions": (
-                                    "Onboarding is complete. The student's session goal is already known from the last answer. "
-                                    "Do NOT ask about the topic again. "
-                                    "Now ask ONLY these three questions — strictly one at a time, wait for each answer before asking the next: "
-                                    "1. Ask about deadline or exam date. "
-                                    "2. Ask about exam format (Multiple Choice, open questions, etc.). "
-                                    "3. Ask about current knowledge level (beginner, intermediate, advanced). "
-                                    "Do NOT start teaching. Do NOT combine questions."
+                                    "Onboarding is complete. The student just told you what they want to work on today. "
+                                    "Ask ONE brief follow-up question: confirm their goal and ask if there is a deadline or something specific they are preparing for — keep it open, do NOT assume they have an exam. "
+                                    "Wait for the answer. Then ask about their current knowledge level on the topic. "
+                                    "Do NOT start teaching yet."
                                 ),
                                 "tool_choice": "none",
                             },
