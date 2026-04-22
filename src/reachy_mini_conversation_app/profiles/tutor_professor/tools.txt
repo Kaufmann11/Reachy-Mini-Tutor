@@ -1,5 +1,3 @@
 camera
 head_tracking
-play_emotion
 rag_tool
-save_user_profile

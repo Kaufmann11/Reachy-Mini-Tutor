@@ -34,8 +34,59 @@ logger = logging.getLogger(__name__)
 # Module-level document context for PDF injection
 _pending_document_context: str = ""
 
-# Module-level user profile context injected after onboarding (V1 profiles only)
-_pending_user_profile: str = ""
+# V1 profiles that use the KBD framework and full onboarding
+V1_PROFILES: frozenset[str] = frozenset({"tutor_buddy", "tutor_coach", "tutor_professor", "tutor_socratic"})
+
+# Explicit instruction passed to response.create for each onboarding question.
+# Code owns the flow — no flow logic lives in the session instructions.
+_ONBOARDING_Q_INSTRUCTIONS: dict[int, str] = {
+    1: "Sag genau: 'Hallo! Ich bin Reachy, dein Lernbegleiter. Bevor wir starten, habe ich kurz ein paar Fragen.' und frage dann: 'Wie heißt du?' — nur diese Frage, keine weiteren Kommentare.",
+    2: "Frage jetzt NUR: 'Was studierst du, und in welchem Semester bist du gerade?' — keine Einleitung, nur diese Frage.",
+    3: "Frage jetzt NUR: 'Wie gerne lernst du generell — machst du es eher weil du es musst, oder interessiert dich das Thema wirklich?' — nur diese Frage.",
+    4: "Frage jetzt NUR: 'Was motiviert dich beim Lernen am meisten — zum Beispiel eine gute Note, das Verstehen an sich, oder etwas anderes?' — nur diese Frage.",
+    5: "Frage jetzt NUR: 'Wie lernst du am liebsten — eher durch Erklärungen, durch Beispiele, durch Übungsaufgaben, oder durch Fragen?' — nur diese Frage.",
+    6: "Frage jetzt NUR: 'Hast du Hobbys oder Interessen außerhalb des Studiums? Und lernst du lieber sachlich oder darf's auch mal humorvoll sein?' — nur diese Frage.",
+    7: "Frage jetzt NUR: 'Was möchtest du heute in unserer Session erreichen?' — nur diese Frage, keine Zusammenfassung, keine Einleitung.",
+}
+
+_ONBOARDING_LABELS: dict[int, str] = {
+    1: "Name",
+    2: "Studium/Semester",
+    3: "Lernmotivation",
+    4: "Motivator",
+    5: "Lernstil",
+    6: "Hobbys+Humor",
+    7: "Session-Ziel",
+}
+
+
+def _is_valid_onboarding_answer(text: str, q_num: int) -> bool:
+    """Return True if the user turn looks like a real answer (not a counter-question or filler)."""
+    stripped = text.strip()
+    if not stripped or len(stripped) < 2:
+        return False
+    words = stripped.split()
+    # Pure short question → probably not an answer
+    if len(words) <= 3 and stripped.endswith("?"):
+        return False
+    lower = stripped.lower()
+    # Single-word greetings, fillers, and confusion responses are not answers
+    fillers = {
+        "was", "hm", "hmm", "äh", "ähm", "wie bitte", "bitte was", "was meinst du", "was meinst",
+        "hallo", "hi", "hey", "ok", "okay", "ja", "nein", "ne", "ach so", "alles klar",
+        "moment", "warte", "warte mal", "ach", "oh", "achso",
+    }
+    if lower in fillers:
+        return False
+    # Single char or two-char non-names
+    if len(words) == 1 and len(stripped) <= 2:
+        return False
+    return True
+
+
+def _build_lernprofil(answers: dict) -> str:
+    lines = [f"- {_ONBOARDING_LABELS[i]}: {answers.get(i, '?')}" for i in range(1, 8)]
+    return "[LERNPROFIL — Onboarding:\n" + "\n".join(lines) + "]"
 
 OPEN_AI_INPUT_SAMPLE_RATE: Final[Literal[24000]] = 24000
 OPEN_AI_OUTPUT_SAMPLE_RATE: Final[Literal[24000]] = 24000
@@ -68,11 +119,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.last_activity_time = asyncio.get_event_loop().time()
         self.start_time = asyncio.get_event_loop().time()
         self.is_idle_tool_call = False
-        self._audio_produced_in_turn = False
-        self._silent_tool_response_sent = False
-        self._profile_saved_pending = False
-        self._onboarding_answers: list[str] = []
-        self._onboarding_complete = False
+        self._response_audio_produced = False   # True once audio.delta fires in current response
+        self._response_create_issued = False    # True if tool handler already called response.create
+        # Onboarding state machine — reset at the start of every session
+        self._onboarding: dict = {
+            "phase": "onboarding",    # "onboarding" | "tutoring"
+            "current_q": 1,           # 1–7; advances only on valid answer
+            "answers": {},            # {1: "Max", 2: "BWL 3. Sem", ...}
+            "profile_injected": False,
+        }
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -245,9 +300,18 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             logger.warning("_restart_session failed: %s", e)
 
     async def _run_realtime_session(self) -> None:
+        """Establish and manage a single realtime session."""
+        # Reset per-session state so restarts start clean
+        self._onboarding = {
+            "phase": "onboarding",
+            "current_q": 1,
+            "answers": {},
+            "profile_injected": False,
+        }
+        self._response_audio_produced = False
+        self._response_create_issued = False
         conv = ConversationManager("student_001")
         user_id = "student_001"
-        """Establish and manage a single realtime session."""
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
             try:
                 await conn.session.update(
@@ -266,6 +330,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "threshold": 0.7,
                                     "silence_duration_ms": 800,
                                     "interrupt_response": True,
+                                    "create_response": False,
                                 },
                             },
                             "output": {
@@ -293,6 +358,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 return
 
             logger.info("Realtime session updated successfully")
+
+            # With create_response:false the server never auto-responds.
+            # We trigger the first response here to start the conversation.
+            _cur_profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+            _is_tutor_profile = _cur_profile in V1_PROFILES or _cur_profile == "tutor_basic"
+            try:
+                if _is_tutor_profile:
+                    await conn.response.create(
+                        response={"instructions": _ONBOARDING_Q_INSTRUCTIONS[1], "tool_choice": "auto"}
+                    )
+                    logger.info("Triggered initial greeting + Q1 for profile=%s", _cur_profile)
+                else:
+                    await conn.response.create(response={})
+                    logger.info("Triggered initial greeting for non-tutor profile=%s", _cur_profile)
+            except Exception as e:
+                logger.warning("Initial response.create failed: %s", e)
 
             # Manage event received from the openai server
             self.connection = conn
@@ -326,48 +407,44 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     logger.debug("Response created")
 
                 if event.type == "response.done":
-                    # Doesn't mean the audio is done playing
-                    logger.debug("Response done")
-                    self._audio_produced_in_turn = False
-                    self._silent_tool_response_sent = False
-                    self._profile_saved_pending = False
-                    # Auto-trigger clarifying questions after 7 onboarding answers (V1 profiles only)
-                    # This runs independently of whether the model called save_user_profile.
-                    V1_PROFILES = {"tutor_buddy", "tutor_coach", "tutor_professor", "tutor_socratic"}
-                    current_profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
-                    if (
-                        not self._onboarding_complete
-                        and len(self._onboarding_answers) >= 7
-                        and current_profile in V1_PROFILES
-                        and self.connection
-                    ):
-                        self._onboarding_complete = True
-                        # Build LERNPROFIL from raw onboarding answers
-                        labels = ["Name", "Studium/Semester", "Lernmotivation", "Motivator", "Lernstil", "Hobbys+Humor", "Session-Ziel"]
-                        profile_lines = [f"- {labels[i]}: {self._onboarding_answers[i]}" for i in range(7)]
-                        profile_text = "[LERNPROFIL — Onboarding:\n" + "\n".join(profile_lines) + "]"
-                        try:
-                            await self.connection.conversation.item.create(
-                                item={
-                                    "type": "message",
-                                    "role": "user",
-                                    "content": [{"type": "input_text", "text": profile_text}],
-                                }
-                            )
-                            logger.info("Auto-injected onboarding profile after 7 answers")
-                        except Exception as e:
-                            logger.warning("Auto profile injection failed: %s", e)
-                        await self.connection.response.create(
-                            response={
-                                "instructions": (
-                                    "Onboarding is complete. The student just told you what they want to work on today. "
-                                    "Ask ONE brief follow-up question: confirm their goal and ask if there is a deadline or something specific they are preparing for — keep it open, do NOT assume they have an exam. "
-                                    "Wait for the answer. Then ask about their current knowledge level on the topic. "
-                                    "Do NOT start teaching yet."
-                                ),
-                                "tool_choice": "none",
-                            },
-                        )
+                    logger.debug(
+                        "Response done: audio=%s create_issued=%s phase=%s q=%s",
+                        self._response_audio_produced,
+                        self._response_create_issued,
+                        self._onboarding["phase"],
+                        self._onboarding["current_q"],
+                    )
+                    # Guardrail: model produced no audio AND no response.create was already triggered.
+                    # Fires in both onboarding (re-ask current Q) and tutoring (force speech).
+                    if not self._response_audio_produced and not self._response_create_issued and self.connection:
+                        _gp = self._onboarding["phase"]
+                        _gq = self._onboarding["current_q"]
+                        _gcur = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+                        _gtutor = _gcur in V1_PROFILES or _gcur == "tutor_basic"
+                        if _gp == "onboarding" and _gtutor and 1 <= _gq <= 7:
+                            logger.warning("No audio in onboarding — re-asking Q%d", _gq)
+                            try:
+                                await self.connection.response.create(
+                                    response={
+                                        "instructions": _ONBOARDING_Q_INSTRUCTIONS[_gq],
+                                        "tool_choice": "auto",
+                                    }
+                                )
+                            except Exception as e:
+                                logger.warning("Onboarding guardrail failed: %s", e)
+                        elif _gp == "tutoring":
+                            logger.warning("No audio in tutoring — triggering guardrail speech")
+                            try:
+                                await self.connection.response.create(
+                                    response={
+                                        "instructions": "Der Student wartet auf deine Antwort. Sprich jetzt.",
+                                        "tool_choice": "none",
+                                    }
+                                )
+                            except Exception as e:
+                                logger.warning("Tutoring guardrail failed: %s", e)
+                    self._response_audio_produced = False
+                    self._response_create_issued = False
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -430,6 +507,81 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                     await self.output_queue.put(AdditionalOutputs({"role": "user", "content": event.transcript}))
 
+                    # --- Response control (create_response:false — code decides when to respond) ---
+                    _profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+                    _is_tutor = _profile in V1_PROFILES or _profile == "tutor_basic"
+                    ob = self._onboarding
+
+                    if _is_tutor and ob["phase"] == "onboarding":
+                        q = ob["current_q"]
+                        text = event.transcript.strip()
+                        if _is_valid_onboarding_answer(text, q):
+                            ob["answers"][q] = text
+                            ob["current_q"] = q + 1
+                            logger.info("Onboarding Q%d answered: %r (profile=%s)", q, text, _profile)
+
+                            if ob["current_q"] > 7:
+                                # All 7 questions answered
+                                if _profile in V1_PROFILES and not ob["profile_injected"]:
+                                    profile_text = _build_lernprofil(ob["answers"])
+                                    try:
+                                        await self.connection.conversation.item.create(
+                                            item={
+                                                "type": "message",
+                                                "role": "user",
+                                                "content": [{"type": "input_text", "text": profile_text}],
+                                            }
+                                        )
+                                        ob["profile_injected"] = True
+                                        logger.info("LERNPROFIL injected (profile=%s)", _profile)
+                                    except Exception as e:
+                                        logger.warning("LERNPROFIL injection failed: %s", e)
+
+                                ob["phase"] = "tutoring"
+                                logger.info("Onboarding complete → tutoring (profile=%s)", _profile)
+
+                                if _profile in V1_PROFILES:
+                                    await self.connection.response.create(
+                                        response={
+                                            "instructions": (
+                                                "Das Onboarding ist abgeschlossen. Frage jetzt kurz nach: "
+                                                "Was genau möchte der Student heute erreichen, und gibt es eine Deadline oder Abgabe? "
+                                                "Keine Prüfungs-Annahmen. Danach: Was ist sein aktueller Wissensstand zu dem Thema? "
+                                                "Noch nicht lehren."
+                                            ),
+                                            "tool_choice": "auto",
+                                        }
+                                    )
+                                else:
+                                    # V2: no profile injection, go straight to tutoring
+                                    await self.connection.response.create(response={})
+                            else:
+                                # Ask next question
+                                next_q = ob["current_q"]
+                                await self.connection.response.create(
+                                    response={
+                                        "instructions": _ONBOARDING_Q_INSTRUCTIONS[next_q],
+                                        "tool_choice": "auto",
+                                    }
+                                )
+                                logger.info("Triggered Q%d (profile=%s)", next_q, _profile)
+                        else:
+                            # Answer not valid — re-ask same question
+                            logger.info("Onboarding Q%d: invalid answer %r — re-asking", q, text)
+                            await self.connection.response.create(
+                                response={
+                                    "instructions": (
+                                        f"Die Antwort war unklar. "
+                                        + _ONBOARDING_Q_INSTRUCTIONS[q]
+                                    ),
+                                    "tool_choice": "auto",
+                                }
+                            )
+                    else:
+                        # Tutoring phase or non-tutor profile: normal response
+                        if self.connection:
+                            await self.connection.response.create(response={})
+
                 # Handle assistant transcription
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
                     logger.debug(f"Assistant transcript: {event.transcript}")
@@ -451,7 +603,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle audio delta
                 if event.type in ("response.audio.delta", "response.output_audio.delta"):
-                    self._audio_produced_in_turn = True
+                    self._response_audio_produced = True
                     if self.deps.head_wobbler is not None:
                         self.deps.head_wobbler.feed(event.delta)
                     self.last_activity_time = asyncio.get_event_loop().time()
@@ -540,37 +692,21 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 ),
                             )
 
-                    # Movement tools (play_emotion, move_head, etc.) are physical actions
-                    # that accompany speech — they don't need a verbal follow-up.
-                    # But if the model called a movement tool WITHOUT speaking first,
-                    # we still need to trigger a response so it answers the user.
+                    # With create_response:false the model continues in the same response
+                    # after tool execution — no extra response.create needed for movement tools
+                    # or save_user_profile. Only tools that return content the model must
+                    # speak aloud (camera, rag_tool, etc.) need an explicit trigger.
                     MOVEMENT_TOOLS = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
-                    elif tool_name == "save_user_profile":
-                        # Mark profile as saved — profile injection and clarifying questions
-                        # are triggered in response.done to avoid race conditions with
-                        # other tool calls (e.g. play_emotion) in the same response.
-                        self._profile_saved_pending = True
-                        logger.info("save_user_profile called — will inject profile and trigger clarifying questions on response.done")
-                    elif tool_name in MOVEMENT_TOOLS and self._audio_produced_in_turn:
-                        pass  # model already spoke — movement is just an accompaniment
-                    elif tool_name in MOVEMENT_TOOLS and not self._audio_produced_in_turn:
-                        # Force speech only once per turn — prevents double response.create
-                        # when model calls multiple movement tools silently in one response.
-                        if not self._silent_tool_response_sent:
-                            self._silent_tool_response_sent = True
-                            await self.connection.response.create(
-                                response={
-                                    "instructions": "The student is waiting for a verbal answer. Speak now.",
-                                    "tool_choice": "none",
-                                },
-                            )
+                    elif tool_name in MOVEMENT_TOOLS or tool_name == "save_user_profile":
+                        pass  # model continues in same response; guardrail in response.done handles edge cases
                     else:
+                        self._response_create_issued = True
                         await self.connection.response.create(
                             response={
                                 "instructions": "Use the tool result just returned and answer concisely in speech.",
-                                "tool_choice": "none",
+                                "tool_choice": "auto",
                             },
                         )
 
