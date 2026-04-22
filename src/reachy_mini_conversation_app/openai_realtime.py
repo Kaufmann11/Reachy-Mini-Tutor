@@ -359,7 +359,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             logger.warning("Auto profile injection failed: %s", e)
                         await self.connection.response.create(
                             response={
-                                "instructions": "Onboarding is complete. Ask the clarifying questions from [Didactic flow] one at a time: first the topic, then deadline, then exam format, then knowledge level. Ask naturally, not as a list. Do not summarize the onboarding.",
+                                "instructions": (
+                                    "Onboarding is complete. The student's session goal is already known from the last answer. "
+                                    "Do NOT ask about the topic again. "
+                                    "Now ask ONLY these three questions — strictly one at a time, wait for each answer before asking the next: "
+                                    "1. Ask about deadline or exam date. "
+                                    "2. Ask about exam format (Multiple Choice, open questions, etc.). "
+                                    "3. Ask about current knowledge level (beginner, intermediate, advanced). "
+                                    "Do NOT start teaching. Do NOT combine questions."
+                                ),
                                 "tool_choice": "none",
                             },
                         )
