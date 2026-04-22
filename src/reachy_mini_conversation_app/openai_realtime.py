@@ -49,6 +49,15 @@ _ONBOARDING_Q_INSTRUCTIONS: dict[int, str] = {
     7: "Sage exakt: 'Was möchtest du heute in unserer Session erreichen?' — kein Kommentar davor oder danach.",
 }
 
+# Minimal session instructions used exclusively during onboarding.
+# The model has no personality active — it must say exactly what per-response instructions specify.
+# After Q7 the code switches the session to the full profile instructions via session.update.
+_ONBOARDING_SESSION_INSTRUCTIONS = (
+    "You are Reachy, a learning assistant robot. You are in ONBOARDING MODE. "
+    "Your ONLY task is to say EXACTLY the text given in the per-response instructions — "
+    "no acknowledgments, no additions, no personality. Word for word, nothing more, nothing less."
+)
+
 _ONBOARDING_LABELS: dict[int, str] = {
     1: "Name",
     2: "Studium/Semester",
@@ -124,7 +133,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Onboarding state machine — reset at the start of every session
         self._onboarding: dict = {
             "phase": "onboarding",    # "onboarding" | "tutoring"
-            "current_q": 1,           # 1–7; advances only on valid answer
+            "current_q": 0,           # 0 = waiting for user to initiate; 1–7 = active Q
             "answers": {},            # {1: "Max", 2: "BWL 3. Sem", ...}
             "profile_injected": False,
         }
@@ -304,7 +313,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Reset per-session state so restarts start clean
         self._onboarding = {
             "phase": "onboarding",
-            "current_q": 1,
+            "current_q": 0,
             "answers": {},
             "profile_injected": False,
         }
@@ -314,10 +323,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         user_id = "student_001"
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
             try:
+                _cur_profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+                _is_tutor_profile = _cur_profile in V1_PROFILES or _cur_profile == "tutor_basic"
+                # During onboarding use minimal instructions so the model cannot override the script.
+                # After Q7, code calls session.update again with the full profile instructions.
+                _initial_instructions = _ONBOARDING_SESSION_INSTRUCTIONS if _is_tutor_profile else get_session_instructions()
                 await conn.session.update(
                     session={
                         "type": "realtime",
-                        "instructions": get_session_instructions(),
+                        "instructions": _initial_instructions,
                         "audio": {
                             "input": {
                                 "format": {
@@ -359,21 +373,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
             logger.info("Realtime session updated successfully")
 
-            # With create_response:false the server never auto-responds.
-            # We trigger the first response here to start the conversation.
-            _cur_profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
-            _is_tutor_profile = _cur_profile in V1_PROFILES or _cur_profile == "tutor_basic"
-            try:
-                if _is_tutor_profile:
-                    await conn.response.create(
-                        response={"instructions": _ONBOARDING_Q_INSTRUCTIONS[1], "tool_choice": "auto"}
-                    )
-                    logger.info("Triggered initial greeting + Q1 for profile=%s", _cur_profile)
-                else:
+            # Tutor profiles wait for the user to speak first (current_q==0).
+            # Non-tutor profiles get an immediate greeting.
+            if not _is_tutor_profile:
+                try:
                     await conn.response.create(response={})
                     logger.info("Triggered initial greeting for non-tutor profile=%s", _cur_profile)
-            except Exception as e:
-                logger.warning("Initial response.create failed: %s", e)
+                except Exception as e:
+                    logger.warning("Initial response.create failed: %s", e)
+            else:
+                logger.info("Waiting for user to initiate conversation (profile=%s)", _cur_profile)
 
             # Manage event received from the openai server
             self.connection = conn
@@ -422,12 +431,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         _gcur = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
                         _gtutor = _gcur in V1_PROFILES or _gcur == "tutor_basic"
                         if _gp == "onboarding" and _gtutor and 1 <= _gq <= 7:
+                            # current_q==0 means waiting for user to initiate — no guardrail needed
                             logger.warning("No audio in onboarding — re-asking Q%d", _gq)
                             try:
                                 await self.connection.response.create(
                                     response={
                                         "instructions": _ONBOARDING_Q_INSTRUCTIONS[_gq],
-                                        "tool_choice": "auto",
+                                        "tool_choice": "none",
                                     }
                                 )
                             except Exception as e:
@@ -511,13 +521,29 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if _is_tutor and ob["phase"] == "onboarding":
                         q = ob["current_q"]
                         text = event.transcript.strip()
-                        if _is_valid_onboarding_answer(text, q):
+
+                        if q == 0:
+                            # User said something — they initiated. Now ask Q1 (greeting + first question).
+                            ob["current_q"] = 1
+                            logger.info("User initiated conversation — triggering Q1 (profile=%s)", _profile)
+                            await self.connection.response.create(
+                                response={"instructions": _ONBOARDING_Q_INSTRUCTIONS[1], "tool_choice": "none"}
+                            )
+                        elif _is_valid_onboarding_answer(text, q):
                             ob["answers"][q] = text
                             ob["current_q"] = q + 1
                             logger.info("Onboarding Q%d answered: %r (profile=%s)", q, text, _profile)
 
                             if ob["current_q"] > 7:
-                                # All 7 questions answered
+                                # All 7 questions answered — switch session to full profile instructions
+                                try:
+                                    await self.connection.session.update(
+                                        session={"instructions": get_session_instructions()}
+                                    )
+                                    logger.info("Session instructions switched to full profile (profile=%s)", _profile)
+                                except Exception as e:
+                                    logger.warning("Session instructions switch failed: %s", e)
+
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
                                     try:
@@ -557,7 +583,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 await self.connection.response.create(
                                     response={
                                         "instructions": _ONBOARDING_Q_INSTRUCTIONS[next_q],
-                                        "tool_choice": "auto",
+                                        "tool_choice": "none",
                                     }
                                 )
                                 logger.info("Triggered Q%d (profile=%s)", next_q, _profile)
@@ -567,10 +593,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             await self.connection.response.create(
                                 response={
                                     "instructions": (
-                                        f"Die Antwort war unklar. "
+                                        "Die Antwort war unklar. "
                                         + _ONBOARDING_Q_INSTRUCTIONS[q]
                                     ),
-                                    "tool_choice": "auto",
+                                    "tool_choice": "none",
                                 }
                             )
                     else:
@@ -698,8 +724,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     MOVEMENT_TOOLS = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
-                    elif tool_name in MOVEMENT_TOOLS or tool_name == "save_user_profile":
-                        pass  # model continues in same response; guardrail in response.done handles edge cases
+                    elif tool_name in MOVEMENT_TOOLS:
+                        # Cancel the active response so the model cannot produce additional speech
+                        # after the movement. Audio already played before the tool call is kept.
+                        try:
+                            await self.connection.response.cancel()
+                            logger.debug("Response cancelled after movement tool '%s'", tool_name)
+                        except Exception as e:
+                            logger.debug("response.cancel after movement (non-fatal): %s", e)
+                    elif tool_name == "save_user_profile":
+                        pass
                     else:
                         self._response_create_issued = True
                         await self.connection.response.create(
