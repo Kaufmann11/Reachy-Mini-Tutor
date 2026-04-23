@@ -528,10 +528,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             await self.connection.response.create(
                 response={
                     "instructions": instructions,
-                    # No tools during onboarding: movement tools produce motor noise
-                    # that the mic picks up, triggering VAD → phantom transcripts →
-                    # invalid-answer re-ask loops. Onboarding stays clean/verbal only.
-                    "tool_choice": "none",
+                    "tool_choice": "auto",
+                    # Cap onboarding responses tightly — prevents the model from
+                    # appending filler ("Ich bin gespannt, wie es weitergeht…") after
+                    # the required Q. ~60 tokens ≈ one short acknowledgement + one Q.
+                    "max_output_tokens": 90,
                 }
             )
             logger.info("Asked onboarding Q%d (reask=%s)", q_num, reask)
@@ -719,12 +720,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle completed transcription (user finished speaking)
                 if event.type == "conversation.item.input_audio_transcription.completed":
-                    # Echo-grace window: drop transcripts that arrive within 700ms of the
-                    # bot finishing — almost always bot-audio/motor echo picked up by the mic
-                    # and transcribed as phantom user input.
+                    # Echo-grace window: drop very short transcripts (<=2 words) that arrive
+                    # within 400ms of the bot finishing — almost always bot-audio/motor echo
+                    # picked up by the mic. Real user answers either come later or are longer.
                     import time as _time
                     _since_bot = _time.monotonic() - self._last_response_done_ts
-                    if 0 < _since_bot < 0.7 and len(event.transcript.strip().split()) <= 4:
+                    if 0 < _since_bot < 0.4 and len(event.transcript.strip().split()) <= 2:
                         logger.info(
                             "Dropping echo-window transcript %r (%.2fs since response.done)",
                             event.transcript, _since_bot,
