@@ -608,11 +608,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                             if ob["current_q"] > 7:
                                 # All 7 questions answered
+                                # Always cache name/hobbies — V1 uses them, V2 uses them
+                                # as explicit forbidden tokens in per-turn instruction.
+                                self._lernprofil_name = ob["answers"].get(1, "").strip().rstrip(".!?")
+                                self._lernprofil_hobbies = ob["answers"].get(6, "").strip()
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
                                     self._lernprofil_text = profile_text
-                                    self._lernprofil_name = ob["answers"].get(1, "").strip().rstrip(".!?")
-                                    self._lernprofil_hobbies = ob["answers"].get(6, "").strip()
                                     try:
                                         await self.connection.conversation.item.create(
                                             item={
@@ -669,42 +671,59 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "Die Bewegung markiert das Ende deiner Antwort."
                             )
                             if _profile == "tutor_basic":
-                                # V2 reminder every turn — prevents leakage of onboarding info
+                                # V2 reminder — name put at TOP as explicit forbidden token.
+                                # General "no onboarding info" rule was too abstract: GPT-4o
+                                # still leaked the name ("Du machst das gut, Mike") because
+                                # it sat in history and pattern-matched as friendly.
+                                forbidden_name = (
+                                    f"\n🚫 ABSOLUTES VERBOT — NAME: Der Studierende heißt '{self._lernprofil_name}'. "
+                                    f"Verwende '{self._lernprofil_name}' NIEMALS in deiner Antwort. "
+                                    f"Keine Anrede ('Mike', 'Hi Mike', 'Du machst das gut, {self._lernprofil_name}'). "
+                                    f"Adressiere den Studierenden ausschließlich mit 'Du' — nie mit seinem Namen. "
+                                    if self._lernprofil_name else ""
+                                )
+                                forbidden_hobby = (
+                                    f"\n🚫 ABSOLUTES VERBOT — HOBBY/KONTEXT: Hobby/Interesse war '{self._lernprofil_hobbies}'. "
+                                    "Verwende es NICHT als Beispiel, Analogie oder Kontext. "
+                                    if self._lernprofil_hobbies else ""
+                                )
                                 tutoring_instructions = (
-                                    common_turn_rule + " "
-                                    "STRIKT: Du bist die Kontrollbedingung (V2). Erwähne KEINE Onboarding-Infos "
-                                    "(Name, Hobby, Studium, Semester, Motivation, Lernstil, Lernziel, Wissensstand). "
-                                    "Verwende sie auch NICHT implizit, um Beispiele oder Ton anzupassen. "
-                                    "Wenn der Studierende fragt 'weißt du noch X?' oder ähnlich — antworte: "
-                                    "'Nein, ich starte jede Session neu ohne Vorwissen.'"
+                                    "=== V2 KONTROLLBEDINGUNG — HARTE REGELN ZUERST ===\n"
+                                    + forbidden_name
+                                    + forbidden_hobby
+                                    + "\n🚫 Erwähne KEINE Onboarding-Infos (Studium, Semester, Motivation, Lernstil, Lernziel, Wissensstand). "
+                                    "Keine implizite Anpassung von Beispielen/Ton an diese Angaben. "
+                                    "Wenn der Studierende fragt 'weißt du noch X?' — antworte: "
+                                    "'Nein, ich starte jede Session neu ohne Vorwissen.'\n\n"
+                                    + common_turn_rule
                                 )
                             elif _profile in V1_PROFILES:
                                 self._tutoring_turn_count += 1
-                                # Cadence reminders: when the name hasn't been used for 2+ turns,
-                                # inject a stronger nudge. Same for Hobby analogies.
                                 turns_since_name = (
                                     self._tutoring_turn_count - self._last_name_used_turn
                                 )
-                                name_nudge = ""
-                                if self._lernprofil_name and turns_since_name >= 2:
-                                    name_nudge = (
-                                        f"\n⚠ NAME-ERINNERUNG: Du hast '{self._lernprofil_name}' seit "
-                                        f"{turns_since_name} Turns nicht mehr angesprochen. "
-                                        f"Sprich {self._lernprofil_name} in DIESER Antwort mindestens einmal direkt an. "
-                                    )
-                                hobby_nudge = ""
+                                # Name: ALWAYS mandate usage in V1. First 3 turns: inject every turn
+                                # (build the habit). After: only if stale (2+ turns).
+                                name_rule = ""
+                                if self._lernprofil_name:
+                                    if self._tutoring_turn_count <= 3 or turns_since_name >= 2:
+                                        name_rule = (
+                                            f"\n✅ PFLICHT — NAMENS-NUTZUNG: Der Studierende heißt '{self._lernprofil_name}'. "
+                                            f"Du MUSST '{self._lernprofil_name}' in DIESER Antwort mindestens einmal direkt ansprechen. "
+                                            f"Natürlich platziert — nicht am Anfang jedes Satzes, aber eingebaut. "
+                                        )
+                                hobby_rule = ""
                                 if self._lernprofil_hobbies and self._tutoring_turn_count in (2, 5, 9):
-                                    hobby_nudge = (
-                                        f"\n⚠ HOBBY-BRÜCKE: Der Student hat als Hobbys/Interesse '{self._lernprofil_hobbies}' genannt. "
+                                    hobby_rule = (
+                                        f"\n✅ PFLICHT — HOBBY-BRÜCKE: Hobby/Interesse ist '{self._lernprofil_hobbies}'. "
                                         "Wenn sich EINE fachlich passende Analogie aus diesem Bereich anbietet, nutze sie jetzt. "
                                         "Nur wenn sie wirklich passt — nicht erzwingen. "
                                     )
-                                doc_nudge = ""
+                                doc_rule = ""
                                 if self._document_uploaded:
-                                    doc_nudge = (
-                                        "\n⚠ RAG-ZWANG: Der Student hat Unterrichtsmaterial hochgeladen. "
-                                        "Bevor du eine INHALTLICHE Aussage zum Fachthema machst, rufe rag_tool auf, "
-                                        "um die Antwort in den Folien zu verankern. "
+                                    doc_rule = (
+                                        "\n✅ PFLICHT — RAG-ZWANG: Der Student hat Unterrichtsmaterial hochgeladen. "
+                                        "Bevor du eine INHALTLICHE Aussage zum Fachthema machst, rufe rag_tool auf. "
                                         "Zitiere konkret: 'Auf Folie X steht…'. "
                                         "Erfinde KEINE Beispiele, die nicht in den Folien stehen. "
                                     )
@@ -712,42 +731,31 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     f"\nAKTUELLES LERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
                                     if self._lernprofil_text else ""
                                 )
+                                # KBD mandates FIRST (what drives V1 vs V2 difference),
+                                # THEN universal behavioral prohibitions.
                                 tutoring_instructions = (
-                                    "=== V1 TUTORING TURN — HARTE PFLICHTEN ZUERST ===\n"
-                                    "🚫 VERBOT 1 — KEINE DIREKTEN ANTWORTEN:\n"
-                                    "Wenn der Student 'keine Ahnung' / 'weiß nicht' sagt, falsch antwortet, oder ratlos klingt: "
-                                    "Gib KEINE volle Antwort, keine Definition, kein Beispiel als Lösung. "
-                                    "Stelle stattdessen eine EINFACHERE Teilfrage, nutze eine Analogie, oder frage 'Was weißt du schon dazu?'. "
-                                    "Erst nach dem ZWEITEN gescheiterten Anlauf darfst du einen kleinen Hinweis geben — "
-                                    "auch dann nie die komplette Lösung. "
-                                    "Ein 'keine Ahnung' = ZWINGEND zuerst neue Frage, nicht Antwort. "
-                                    "\n🚫 VERBOT 2 — ANKÜNDIGEN OHNE LIEFERN:\n"
-                                    "NIE sagen 'lass uns ein Beispiel anschauen' / 'los geht's' / 'wir gehen es durch' OHNE "
-                                    "im SELBEN Satz/Absatz das Beispiel / den Schritt / die Frage direkt zu liefern. "
-                                    "Ansage + Leerlauf = verboten. "
-                                    "\n🚫 VERBOT 3 — KAMERA-HALLUZINATION:\n"
-                                    "Du hast in dieser Session KEINE Kamera. Sage NIEMALS 'ich sehe…' / 'ich erkenne auf dem Bild…' / "
-                                    "'deine Slides sehe ich'. Wenn Folien/Bilder erwähnt werden, sage: "
-                                    "'Ich kann sie nicht sehen wie ein Mensch, aber den Textinhalt habe ich über rag_tool.' "
-                                    "\n🚫 VERBOT 4 — INFO-DUMP:\n"
-                                    "Keine Aufzählung mehrerer Konzepte in einem Turn. 2–4 Sätze, ein Gedanke. "
-                                    "Kein 'Erstens… Zweitens… Drittens…'. Immer mit Folge-Frage + kurzer Phrase enden ('Ich bin gespannt.'). "
-                                    "\n🚫 VERBOT 5 — FAKTEN ERFINDEN:\n"
-                                    "Keine Zahlen, Namen, Fächer, Autoren oder Beispiele erfinden, die nicht gesagt oder in Folien sind. "
-                                    "Unsicher? 'Das weiß ich nicht sicher.' "
-                                    "\n✅ PFLICHT 6 — EMOTION ZUERST:\n"
-                                    "Frustriert / ratlos / überfordert? Erst EIN Satz emotional anerkennen ('Das ist normal, keine Sorge.'), "
-                                    "dann ERST inhaltlich weiter. Niemals drüber weggehen. "
-                                    "\n✅ PFLICHT 7 — SPEZIFISCHE AFFIRMATIONEN:\n"
-                                    "Bei richtiger Antwort: konkret benennen WAS erkannt wurde. "
-                                    "Keine Bausteine 'Super!' / 'Genau!' / 'Klasse!' — jedes Mal frisch formuliert. "
-                                    "\n✅ PFLICHT 8 — BEWEGUNG AM ENDE:\n"
-                                    "Vollständige Antwort sprechen → DANN genau EINE Bewegung (move_head ODER play_emotion). "
-                                    "NIE zwei Bewegungen. Bewegung = Turn-Ende. Sprich nichts mehr danach. "
-                                    + name_nudge
-                                    + hobby_nudge
-                                    + doc_nudge
+                                    "=== V1 TUTORING TURN ===\n"
+                                    + name_rule
+                                    + hobby_rule
+                                    + doc_rule
                                     + profile_block
+                                    + "\n--- DIDAKTISCHE VERBOTE ---\n"
+                                    "🚫 KEINE DIREKTEN ANTWORTEN: Bei 'keine Ahnung' / falscher Antwort / Ratlosigkeit → "
+                                    "KEINE Definition, KEIN Beispiel als Lösung. Stelle eine einfachere Teilfrage oder Analogie. "
+                                    "Erst nach 2. Fehlversuch kleiner Hinweis — nie komplette Lösung. "
+                                    "\n🚫 ANKÜNDIGEN OHNE LIEFERN: Nie 'los geht's' / 'lass uns ein Beispiel anschauen' "
+                                    "ohne im SELBEN Absatz direkt zu liefern. "
+                                    "\n🚫 KAMERA-HALLUZINATION: Keine Kamera aktiv. Nie 'ich sehe…' / 'deine Slides sehe ich'. "
+                                    "Bei Folien-Frage: 'Sehen kann ich nicht wie ein Mensch, aber rag_tool hat den Textinhalt.' "
+                                    "\n🚫 INFO-DUMP: 2–4 Sätze max, ein Gedanke pro Turn. Kein 'Erstens… Zweitens…'. "
+                                    "Immer mit Folge-Frage + kurzer Phrase ('Ich bin gespannt.') enden. "
+                                    "\n🚫 FAKTEN ERFINDEN: Keine Zahlen/Namen/Autoren erfinden. Unsicher? 'Das weiß ich nicht sicher.' "
+                                    "\n--- DIDAKTISCHE PFLICHTEN ---\n"
+                                    "✅ EMOTION ZUERST: Frustriert/ratlos? Erst EIN Satz anerkennen, dann Inhalt. "
+                                    "✅ AFFIRMATIONEN SPEZIFISCH: Bei richtiger Antwort konkret benennen WAS erkannt wurde. "
+                                    "Keine Bausteine 'Super!' / 'Genau!' — jedes Mal frisch. "
+                                    "✅ BEWEGUNG AM ENDE: Antwort sprechen → DANN genau EINE Bewegung → Turn Ende. "
+                                    "\n\n" + common_turn_rule
                                 )
                             else:
                                 tutoring_instructions = common_turn_rule
