@@ -1107,13 +1107,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if self.is_idle_tool_call:
                         self.is_idle_tool_call = False
                     elif tool_name in MOVEMENT_TOOLS:
-                        # Cancel the active response so the model cannot produce additional speech
-                        # after the movement. Audio already played before the tool call is kept.
-                        try:
-                            await self.connection.response.cancel()
-                            logger.debug("Response cancelled after movement tool '%s'", tool_name)
-                        except Exception as e:
-                            logger.debug("response.cancel after movement (non-fatal): %s", e)
+                        # Let the response continue — the model typically emits emotion +
+                        # follow-up speech (recognition / scaffolding). Narration of the
+                        # movement itself is prevented by masking the tool result to
+                        # {"status":"done"} plus the per-turn VERBOTE in instructions.
+                        pass
                     elif tool_name == "save_user_profile":
                         pass
                     else:
