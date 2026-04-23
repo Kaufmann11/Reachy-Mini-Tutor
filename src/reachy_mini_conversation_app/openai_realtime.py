@@ -335,15 +335,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 f"Die/Der Studierende hat gerade auf deine Frage zu '{prev_label}' geantwortet. "
                 "Gehe ganz kurz auf die Antwort ein — EIN Satz, warm und spezifisch zu dem was tatsächlich gesagt wurde. "
                 "Kein leeres Lob, keine Floskel. "
-                "WICHTIG zur Antwort-Verarbeitung: "
-                "Wenn die Antwort eine erkennbare Information enthält (Name, Studium, Hobby, Lernstil, Ziel etc.) — "
-                "auch wenn sie eingebettet in Füllwörter, Abschweifungen oder kleine Versprecher ist — "
-                "extrahiere diese Information und benutze sie in deiner kurzen Reaktion. "
-                "Beispiel: 'Trotzdem, mein Name ist Mike.' → 'Hallo Mike, freut mich!' "
-                "Beispiel: 'Ich studiere nicht mehr, vor zwei Jahren Marketing abgeschlossen.' → 'Ah, Marketing-Background!' "
+                "WICHTIG: Die Antwort wurde bereits validiert — akzeptiere sie IMMER als gültig. "
+                "Auch sehr kurze Ein-Wort-Antworten (z.B. 'Weltall', 'Sport', 'Mike', 'BWL') sind vollwertige Antworten. "
+                "Auch in Füllwörter/Abschweifungen/Versprecher eingebettete Infos sind gültig. "
+                "Extrahiere die Kerninformation und erwähne sie in deiner kurzen Reaktion. "
+                "Beispiele: "
+                "'Weltall.' → 'Weltall — ein faszinierendes Interessengebiet!' "
+                "'Trotzdem, mein Name ist Mike.' → 'Hallo Mike, freut mich!' "
+                "'Ich studiere nicht mehr, vor zwei Jahren Marketing abgeschlossen.' → 'Ah, Marketing-Background!' "
+                "Sage NIEMALS 'Ich habe das nicht ganz verstanden' — wenn die Antwort hier ankommt, ist sie gültig. "
                 "Erfinde NIE Fakten, die nicht gesagt wurden (z.B. ein Semester wenn keines genannt wurde). "
-                "NUR wenn die Antwort komplett leer oder reines Kauderwelsch ist (kein einziges sinnvolles Wort), "
-                "sage EINEN Satz: 'Ich habe das nicht ganz verstanden.' und stelle dann trotzdem die nächste Frage. "
                 f"Stelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
                 "Die Frage muss wörtlich genau so vorkommen. Keine Umformulierung, keine zusätzlichen Erklärungen, "
                 "keine Aufzählung anderer Themen. Stelle in dieser Antwort NUR diese eine Frage — keine zweite Frage."
@@ -643,6 +644,23 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "Verwende sie auch NICHT implizit, um Beispiele oder Ton anzupassen. "
                                     "Wenn der Studierende fragt 'weißt du noch X?' oder ähnlich — antworte: "
                                     "'Nein, ich starte jede Session neu ohne Vorwissen.'"
+                                )
+                            elif _profile in V1_PROFILES:
+                                # V1 reminder every turn — enforces KBD + didactic rules
+                                tutoring_instructions = (
+                                    common_turn_rule + " "
+                                    "V1-KBD-REGELN (strikt bei JEDER inhaltlichen Antwort): "
+                                    "1. NIE die direkte Antwort auf eine Inhaltsfrage geben. "
+                                    "Bei falscher Antwort, 'keine Ahnung', Unsinn, oder wenn der Studierende ratlos klingt: "
+                                    "stelle eine einfachere Teilfrage, gib eine Analogie, oder frage 'Was weißt du schon dazu?'. "
+                                    "Erst nach dem ZWEITEN gescheiterten Versuch darfst du einen Hinweis andeuten — "
+                                    "und selbst dann nie die volle Lösung servieren. "
+                                    "2. Nutze das LERNPROFIL aktiv: Namen gelegentlich einbauen (mehrfach pro Session), "
+                                    "Humor einsetzen wenn im Profil als gewünscht vermerkt, Hobby-Analogien wenn sie passen, "
+                                    "Frustration SOFORT adressieren bevor du inhaltlich weitergehst. "
+                                    "3. Bei richtiger Antwort: warm und spezifisch bestätigen ('Du hast genau erkannt, dass…'), "
+                                    "Formulierung JEDES Mal variieren — kein Lob-Baustein. "
+                                    "4. Lange Info-Dumps vermeiden — lieber kleine Schritte mit Rückfragen."
                                 )
                             else:
                                 tutoring_instructions = common_turn_rule
