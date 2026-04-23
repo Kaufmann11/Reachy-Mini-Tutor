@@ -70,12 +70,16 @@ def _is_valid_onboarding_answer(text: str, q_num: int) -> bool:
     # Pure short question → probably not an answer
     if len(words) <= 3 and stripped.endswith("?"):
         return False
-    lower = stripped.lower()
-    # Single-word greetings, fillers, and confusion responses are not answers
+    lower = stripped.lower().rstrip(".!?,;: ")
+    # Single-word greetings, fillers, confusion, and transcription phantoms
+    # (gpt-4o-transcribe sometimes hallucinates short German words on silence/noise)
     fillers = {
         "was", "hm", "hmm", "äh", "ähm", "wie bitte", "bitte was", "was meinst du", "was meinst",
         "hallo", "hi", "hey", "ok", "okay", "ja", "nein", "ne", "ach so", "alles klar",
         "moment", "warte", "warte mal", "ach", "oh", "achso",
+        # Common transcription phantoms during silence
+        "natürlich", "genau", "sicher", "klar", "doch", "eben", "bestimmt",
+        "vielleicht", "wirklich", "schön", "super", "danke",
     }
     if lower in fillers:
         return False
@@ -345,8 +349,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 "'Trotzdem, mein Name ist Mike.' → 'Hallo Mike, freut mich!' "
                 "'Ich studiere nicht mehr, vor zwei Jahren Marketing abgeschlossen.' → 'Ah, Marketing-Background!' "
                 "Sage NIEMALS 'Ich habe das nicht ganz verstanden' — wenn die Antwort hier ankommt, ist sie gültig. "
-                "Erfinde NIE Fakten, die nicht gesagt wurden (z.B. ein Semester wenn keines genannt wurde). "
-                f"Stelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
+                "\nABSOLUTE ANTI-HALLUZINATIONS-REGEL: "
+                "Wiederhole AUSSCHLIESSLICH Wörter, Zahlen, Fächer und Namen, die der Studierende TATSÄCHLICH GESAGT hat. "
+                "Wenn 'ersten Semester' gesagt wurde, sage NIE 'siebtes Semester'. "
+                "Wenn du eine Zahl oder ein Fach nicht ganz sicher gehört hast, lass sie WEG — "
+                "sage lieber 'Ah, Maschinenbau!' statt einer erfundenen Semester-Zahl. "
+                "Ergänze NIE Antwortoptionen aus deiner vorigen Frage ('durch Fragen' etc.), die der Student gar nicht genannt hat. "
+                "Im Zweifel: weniger wiederholen. "
+                f"\nStelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
                 "Die Frage muss wörtlich genau so vorkommen. Keine Umformulierung, keine zusätzlichen Erklärungen, "
                 "keine Aufzählung anderer Themen. Stelle in dieser Antwort NUR diese eine Frage — keine zweite Frage."
             )
@@ -394,8 +404,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "transcription": {"model": "gpt-4o-transcribe", "language": "de"},
                                 "turn_detection": {
                                     "type": "server_vad",
-                                    "threshold": 0.85,
-                                    "silence_duration_ms": 1500,
+                                    "threshold": 0.92,
+                                    "silence_duration_ms": 2200,
                                     "interrupt_response": True,
                                     "create_response": False,
                                 },
@@ -630,6 +640,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             await self._ask_onboarding_question(q, reask=True)
                     else:
                         # Tutoring phase or non-tutor profile: normal response
+                        # Phantom filter: drop suspiciously short single-filler transcripts
+                        # that gpt-4o-transcribe hallucinates on silence/background noise.
+                        if _is_tutor and ob["phase"] == "tutoring":
+                            text = event.transcript.strip()
+                            if not _is_valid_onboarding_answer(text, 0):
+                                logger.info("Tutoring phantom-filtered transcript %r — not responding", text)
+                                continue
                         # Hint: speak first, then call movement tool — reduces move_head-only responses
                         if self.connection:
                             common_turn_rule = (
