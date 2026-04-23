@@ -690,12 +690,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # else: tutoring phase → stay silent, wait for user
                     self._response_audio_produced = False
                     self._response_create_issued = False
-                    # Release single-flight lock: a Q response just finished
-                    self._onboarding_q_pending = False
                     # Mark when bot finished speaking, so we can reject transcripts
                     # arriving in the immediate grace window (bot-audio echo through mic).
                     import time as _time
                     self._last_response_done_ts = _time.monotonic()
+                    # Release single-flight lock: a Q response just finished.
+                    # During onboarding, keep the lock held for an extra 800ms so that
+                    # any echo/motor-noise transcripts arriving right after response.done
+                    # are dropped by the existing single-flight check (see transcription
+                    # handler). This is the real root-cause fix for the Q-repeat loop.
+                    if self._onboarding["phase"] == "onboarding":
+                        async def _release_q_lock_delayed() -> None:
+                            await asyncio.sleep(0.8)
+                            self._onboarding_q_pending = False
+                        asyncio.create_task(_release_q_lock_delayed())
+                    else:
+                        self._onboarding_q_pending = False
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -720,17 +730,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 # Handle completed transcription (user finished speaking)
                 if event.type == "conversation.item.input_audio_transcription.completed":
-                    # Echo-grace window: drop very short transcripts (<=2 words) that arrive
-                    # within 400ms of the bot finishing — almost always bot-audio/motor echo
-                    # picked up by the mic. Real user answers either come later or are longer.
-                    import time as _time
-                    _since_bot = _time.monotonic() - self._last_response_done_ts
-                    if 0 < _since_bot < 0.4 and len(event.transcript.strip().split()) <= 2:
-                        logger.info(
-                            "Dropping echo-window transcript %r (%.2fs since response.done)",
-                            event.transcript, _since_bot,
-                        )
-                        continue
                     import reachy_mini_conversation_app.openai_realtime as _rt
                     pending = _rt._pending_document_context
                     if pending and self.connection:
