@@ -529,10 +529,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 response={
                     "instructions": instructions,
                     "tool_choice": "auto",
-                    # Cap onboarding responses tightly — prevents the model from
-                    # appending filler ("Ich bin gespannt, wie es weitergeht…") after
-                    # the required Q. ~60 tokens ≈ one short acknowledgement + one Q.
-                    "max_output_tokens": 90,
                 }
             )
             logger.info("Asked onboarding Q%d (reask=%s)", q_num, reask)
