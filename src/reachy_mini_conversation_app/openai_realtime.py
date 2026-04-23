@@ -908,6 +908,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "KEIN INFO-DUMP: Max 3 Sätze, ein Gedanke, enden mit Folge-Frage.",
                                     "KEINE ERFUNDENEN FAKTEN: Unsicher → 'Das weiß ich nicht sicher.'",
                                     "BEWEGUNG STUMM: Kommentiere Bewegung NIE verbal ('ich hebe den Kopf' ist VERBOTEN). Sprich Antwort → rufe eine Bewegung → Turn zu Ende.",
+                                    "KEINE TOOL-ENTSCHULDIGUNGEN: Sag NIE 'Es gab ein Problem' / 'Entschuldige' / 'hat nicht funktioniert' / 'eine Funktion hat nicht reagiert'. Vorheriger Turn ist abgeschlossen. Beginne neue Antwort direkt mit Inhalt.",
                                 ])
                                 profile_block = (
                                     f"\nLERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
@@ -977,13 +978,23 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         logger.error("Tool '%s' failed", tool_name)
                         tool_result = {"error": str(e)}
 
+                    # Mask movement-tool results sent to the model: the model doesn't need
+                    # the raw payload (errors, missing-asset messages, etc.), and any non-empty
+                    # content causes it to self-narrate "es gab ein Problem mit der Bewegung"
+                    # on the next turn. Real errors stay in the server log above.
+                    _MOVEMENT_TOOLS = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
+                    if tool_name in _MOVEMENT_TOOLS:
+                        tool_result_for_model = {"status": "done"}
+                    else:
+                        tool_result_for_model = tool_result
+
                     # send the tool result back
                     if isinstance(call_id, str):
                         await self.connection.conversation.item.create(
                             item={
                                 "type": "function_call_output",
                                 "call_id": call_id,
-                                "output": json.dumps(tool_result),
+                                "output": json.dumps(tool_result_for_model),
                             },
                         )
 
