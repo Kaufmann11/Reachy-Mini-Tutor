@@ -135,6 +135,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             "profile_injected": False,
         }
         self._lernprofil_text: str = ""  # Cached LERNPROFIL for per-turn V1 re-injection
+        self._lernprofil_name: str = ""  # Extracted student name from Q1
+        self._lernprofil_hobbies: str = ""  # Extracted hobbies/interests from Q6
+        self._tutoring_turn_count: int = 0  # Bot tutoring turns since onboarding
+        self._last_name_used_turn: int = -99  # Turn index when name was last spoken
+        self._document_uploaded: bool = False  # True once student uploaded any doc
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -387,6 +392,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_create_issued = False
         self._onboarding_q_pending = False
         self._lernprofil_text = ""
+        self._lernprofil_name = ""
+        self._lernprofil_hobbies = ""
+        self._tutoring_turn_count = 0
+        self._last_name_used_turn = -99
+        self._document_uploaded = False
         conv = ConversationManager("student_001")
         user_id = "student_001"
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
@@ -404,7 +414,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "transcription": {"model": "gpt-4o-transcribe", "language": "de"},
                                 "turn_detection": {
                                     "type": "server_vad",
-                                    "threshold": 0.92,
+                                    "threshold": 0.85,
                                     "silence_duration_ms": 2200,
                                     "interrupt_response": True,
                                     "create_response": False,
@@ -544,6 +554,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 }
                             )
                             _rt._pending_document_context = ""
+                            self._document_uploaded = True
                             logger.info("Document content added to conversation")
                         except Exception as inj_err:
                             logger.warning(f"Doc injection failed: {inj_err}")
@@ -600,6 +611,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
                                     self._lernprofil_text = profile_text
+                                    self._lernprofil_name = ob["answers"].get(1, "").strip().rstrip(".!?")
+                                    self._lernprofil_hobbies = ob["answers"].get(6, "").strip()
                                     try:
                                         await self.connection.conversation.item.create(
                                             item={
@@ -666,32 +679,74 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "'Nein, ich starte jede Session neu ohne Vorwissen.'"
                                 )
                             elif _profile in V1_PROFILES:
-                                # V1 reminder every turn — full KBD + didactic checklist
-                                # LERNPROFIL re-injected inline so it stays fresh in context
+                                self._tutoring_turn_count += 1
+                                # Cadence reminders: when the name hasn't been used for 2+ turns,
+                                # inject a stronger nudge. Same for Hobby analogies.
+                                turns_since_name = (
+                                    self._tutoring_turn_count - self._last_name_used_turn
+                                )
+                                name_nudge = ""
+                                if self._lernprofil_name and turns_since_name >= 2:
+                                    name_nudge = (
+                                        f"\n⚠ NAME-ERINNERUNG: Du hast '{self._lernprofil_name}' seit "
+                                        f"{turns_since_name} Turns nicht mehr angesprochen. "
+                                        f"Sprich {self._lernprofil_name} in DIESER Antwort mindestens einmal direkt an. "
+                                    )
+                                hobby_nudge = ""
+                                if self._lernprofil_hobbies and self._tutoring_turn_count in (2, 5, 9):
+                                    hobby_nudge = (
+                                        f"\n⚠ HOBBY-BRÜCKE: Der Student hat als Hobbys/Interesse '{self._lernprofil_hobbies}' genannt. "
+                                        "Wenn sich EINE fachlich passende Analogie aus diesem Bereich anbietet, nutze sie jetzt. "
+                                        "Nur wenn sie wirklich passt — nicht erzwingen. "
+                                    )
+                                doc_nudge = ""
+                                if self._document_uploaded:
+                                    doc_nudge = (
+                                        "\n⚠ RAG-ZWANG: Der Student hat Unterrichtsmaterial hochgeladen. "
+                                        "Bevor du eine INHALTLICHE Aussage zum Fachthema machst, rufe rag_tool auf, "
+                                        "um die Antwort in den Folien zu verankern. "
+                                        "Zitiere konkret: 'Auf Folie X steht…'. "
+                                        "Erfinde KEINE Beispiele, die nicht in den Folien stehen. "
+                                    )
                                 profile_block = (
-                                    f"\n\nAKTUELLES LERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
+                                    f"\nAKTUELLES LERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
                                     if self._lernprofil_text else ""
                                 )
                                 tutoring_instructions = (
-                                    common_turn_rule + " "
-                                    "\n\nV1-KBD-CHECKLISTE — laufe JEDEN Punkt vor jeder Antwort mental durch:\n"
-                                    "[A] SOCRATIC-FIRST: Ist das eine Inhaltsfrage? Dann NIEMALS direkt antworten. "
-                                    "Erst: 'Was glaubst du? Was weißt du schon dazu?' oder eine Leitfrage. "
-                                    "[B] EMOTION ZUERST: Klingt der Student frustriert/ratlos ('keine Ahnung', 'zu schwer', 'keine Lust', genervt)? "
-                                    "Erst kurz Emotion adressieren ('Das ist normal, lass uns anders rangehen.'), DANN Inhalt. "
-                                    "[C] FALSCHE ANTWORT: Nie stillschweigend weiterziehen und nie direkt korrigieren. "
-                                    "'Interessant — was hat dich dazu gebracht?' Guide bis der Student selbst drauf kommt. "
-                                    "[D] 'KEINE AHNUNG'/UNSINN: Einfachere Teilfrage oder Analogie. "
-                                    "Erst nach dem ZWEITEN Fehlversuch darfst du einen Hinweis andeuten — nie die volle Lösung. "
-                                    "[E] RICHTIGE ANTWORT: Spezifisch + warm + Formulierung JEDES Mal neu. "
-                                    "Kein Lob-Baustein wie 'super!' oder 'richtig!' — benenne konkret WAS der Student erkannt hat. "
-                                    "[F] LERNPROFIL AKTIV: Namen mehrmals pro Session einbauen (nicht nur 1×). "
-                                    "Hobby-Analogie wenn sie fachlich passt. Humor-Ton NUR wenn Profil es als gewünscht vermerkt. "
-                                    "Studium/Semester als Kontext für Beispiele. "
-                                    "[G] KURZ BLEIBEN: 2–4 Sätze max. NIE Info-Dump. Immer mit Folge-Frage enden + kurzer Phrase ('Ich bin gespannt, was du sagst.'). "
-                                    "[H] HONEST LIMITS: Unsicher? 'Das weiß ich nicht sicher.' Erfinde nichts. "
-                                    "[I] KEINE KAMERA: Nach Sehen gefragt? 'In dieser Session habe ich keine Kamera.' "
-                                    "[J] TOOL-TRANSPARENZ: Nur reale Tools (play_emotion, stop_emotion, move_head, head_tracking, camera, rag_tool). Nie erfinden."
+                                    "=== V1 TUTORING TURN — HARTE PFLICHTEN ZUERST ===\n"
+                                    "🚫 VERBOT 1 — KEINE DIREKTEN ANTWORTEN:\n"
+                                    "Wenn der Student 'keine Ahnung' / 'weiß nicht' sagt, falsch antwortet, oder ratlos klingt: "
+                                    "Gib KEINE volle Antwort, keine Definition, kein Beispiel als Lösung. "
+                                    "Stelle stattdessen eine EINFACHERE Teilfrage, nutze eine Analogie, oder frage 'Was weißt du schon dazu?'. "
+                                    "Erst nach dem ZWEITEN gescheiterten Anlauf darfst du einen kleinen Hinweis geben — "
+                                    "auch dann nie die komplette Lösung. "
+                                    "Ein 'keine Ahnung' = ZWINGEND zuerst neue Frage, nicht Antwort. "
+                                    "\n🚫 VERBOT 2 — ANKÜNDIGEN OHNE LIEFERN:\n"
+                                    "NIE sagen 'lass uns ein Beispiel anschauen' / 'los geht's' / 'wir gehen es durch' OHNE "
+                                    "im SELBEN Satz/Absatz das Beispiel / den Schritt / die Frage direkt zu liefern. "
+                                    "Ansage + Leerlauf = verboten. "
+                                    "\n🚫 VERBOT 3 — KAMERA-HALLUZINATION:\n"
+                                    "Du hast in dieser Session KEINE Kamera. Sage NIEMALS 'ich sehe…' / 'ich erkenne auf dem Bild…' / "
+                                    "'deine Slides sehe ich'. Wenn Folien/Bilder erwähnt werden, sage: "
+                                    "'Ich kann sie nicht sehen wie ein Mensch, aber den Textinhalt habe ich über rag_tool.' "
+                                    "\n🚫 VERBOT 4 — INFO-DUMP:\n"
+                                    "Keine Aufzählung mehrerer Konzepte in einem Turn. 2–4 Sätze, ein Gedanke. "
+                                    "Kein 'Erstens… Zweitens… Drittens…'. Immer mit Folge-Frage + kurzer Phrase enden ('Ich bin gespannt.'). "
+                                    "\n🚫 VERBOT 5 — FAKTEN ERFINDEN:\n"
+                                    "Keine Zahlen, Namen, Fächer, Autoren oder Beispiele erfinden, die nicht gesagt oder in Folien sind. "
+                                    "Unsicher? 'Das weiß ich nicht sicher.' "
+                                    "\n✅ PFLICHT 6 — EMOTION ZUERST:\n"
+                                    "Frustriert / ratlos / überfordert? Erst EIN Satz emotional anerkennen ('Das ist normal, keine Sorge.'), "
+                                    "dann ERST inhaltlich weiter. Niemals drüber weggehen. "
+                                    "\n✅ PFLICHT 7 — SPEZIFISCHE AFFIRMATIONEN:\n"
+                                    "Bei richtiger Antwort: konkret benennen WAS erkannt wurde. "
+                                    "Keine Bausteine 'Super!' / 'Genau!' / 'Klasse!' — jedes Mal frisch formuliert. "
+                                    "\n✅ PFLICHT 8 — BEWEGUNG AM ENDE:\n"
+                                    "Vollständige Antwort sprechen → DANN genau EINE Bewegung (move_head ODER play_emotion). "
+                                    "NIE zwei Bewegungen. Bewegung = Turn-Ende. Sprich nichts mehr danach. "
+                                    + name_nudge
+                                    + hobby_nudge
+                                    + doc_nudge
                                     + profile_block
                                 )
                             else:
@@ -703,6 +758,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 # Handle assistant transcription
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
                     logger.debug(f"Assistant transcript: {event.transcript}")
+                    # Track name usage cadence so we can inject reminders when name is stale
+                    if self._lernprofil_name and self._onboarding["phase"] == "tutoring":
+                        if self._lernprofil_name.lower() in event.transcript.lower():
+                            self._last_name_used_turn = self._tutoring_turn_count
                     conv.add("assistant", event.transcript)
                     conv.save()
                     try:
