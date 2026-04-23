@@ -523,6 +523,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 "keine Aufzählung anderer Themen. Stelle in dieser Antwort NUR diese eine Frage — keine zweite Frage."
             )
         try:
+            # Cancel any pending delayed lock-release from a previous Q so it can't
+            # clobber the lock we are about to set.
+            if self._q_lock_release_task and not self._q_lock_release_task.done():
+                self._q_lock_release_task.cancel()
             self._response_create_issued = True
             self._onboarding_q_pending = True
             await self.connection.response.create(
@@ -548,7 +552,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_audio_produced = False
         self._response_create_issued = False
         self._onboarding_q_pending = False
-        self._last_response_done_ts = 0.0
+        self._q_lock_release_task: asyncio.Task | None = None
         self._lernprofil_text = ""
         self._lernprofil_name = ""
         self._lernprofil_hobbies = ""
@@ -558,6 +562,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._onboarding_item_ids = []
         conv = ConversationManager("student_001")
         user_id = "student_001"
+        # Tracks the most recent user transcript across iterations of the event loop.
+        # Initialized here so callers (V1 reactive-mandate builder, metrics logger) can
+        # access it on the very first tutoring turn without the fragile `"..." in dir()`
+        # pattern and without NameError.
+        last_user_text: str = ""
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
             try:
                 await conn.session.update(
@@ -685,20 +694,28 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # else: tutoring phase → stay silent, wait for user
                     self._response_audio_produced = False
                     self._response_create_issued = False
-                    # Mark when bot finished speaking, so we can reject transcripts
-                    # arriving in the immediate grace window (bot-audio echo through mic).
-                    import time as _time
-                    self._last_response_done_ts = _time.monotonic()
                     # Release single-flight lock: a Q response just finished.
                     # During onboarding, keep the lock held for an extra 800ms so that
                     # any echo/motor-noise transcripts arriving right after response.done
                     # are dropped by the existing single-flight check (see transcription
                     # handler). This is the real root-cause fix for the Q-repeat loop.
+                    # A stale task from a previous response could otherwise clobber the
+                    # lock of a newly-started Q — cancel any in-flight release first.
                     if self._onboarding["phase"] == "onboarding":
+                        if self._q_lock_release_task and not self._q_lock_release_task.done():
+                            self._q_lock_release_task.cancel()
+
                         async def _release_q_lock_delayed() -> None:
-                            await asyncio.sleep(0.8)
-                            self._onboarding_q_pending = False
-                        asyncio.create_task(_release_q_lock_delayed())
+                            try:
+                                await asyncio.sleep(0.8)
+                                # Only release if no new Q is pending. If a new
+                                # _ask_onboarding_question ran in the meantime it has already
+                                # re-set the lock; don't clobber that.
+                                if not self._response_create_issued:
+                                    self._onboarding_q_pending = False
+                            except asyncio.CancelledError:
+                                pass
+                        self._q_lock_release_task = asyncio.create_task(_release_q_lock_delayed())
                     else:
                         self._onboarding_q_pending = False
 
@@ -798,10 +815,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
                                     self._lernprofil_text = profile_text
+                                    ob["profile_injected"] = True
+                                    logger.info("V1 LERNPROFIL cached for per-turn injection (profile=%s)", _profile)
                                 elif _profile == "tutor_basic":
                                     # V2: erase onboarding context so GPT-4o literally
-                                    # cannot pattern-match on name/hobby/study — no active
-                                    # "forbidden" rules needed if the info is gone.
+                                    # cannot pattern-match on name/hobby/study. No profile
+                                    # is injected back — V2 is the control condition.
                                     deleted = 0
                                     for iid in self._onboarding_item_ids:
                                         try:
@@ -811,18 +830,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                             logger.debug("Item delete %s failed: %s", iid, e)
                                     logger.info("V2: deleted %d/%d onboarding items from context",
                                                 deleted, len(self._onboarding_item_ids))
-                                    try:
-                                        await self.connection.conversation.item.create(
-                                            item={
-                                                "type": "message",
-                                                "role": "user",
-                                                "content": [{"type": "input_text", "text": profile_text}],
-                                            }
-                                        )
-                                        ob["profile_injected"] = True
-                                        logger.info("LERNPROFIL injected (profile=%s)", _profile)
-                                    except Exception as e:
-                                        logger.warning("LERNPROFIL injection failed: %s", e)
 
                                 ob["phase"] = "tutoring"
                                 logger.info("Onboarding complete → tutoring (profile=%s)", _profile)
@@ -887,7 +894,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # 0) REACTIVE MANDATES — must-fire based on signals in user's last turn.
                                 # Built in code, prepended at absolute top so they win over any other rule.
                                 reactive_mandates, fired_triggers = _build_reactive_mandates(
-                                    last_user_text if "last_user_text" in dir() else "",
+                                    last_user_text,
                                     self._onboarding.get("answers", {}),
                                     self._lernprofil_name,
                                 )
@@ -953,7 +960,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             study_buddy_style=profile.get("study_buddy_style", ""),
                             assertiveness=profile.get("assertiveness", ""),
                             session={},
-                            user_text=last_user_text if "last_user_text" in dir() else "",
+                            user_text=last_user_text,
                             assistant_text=event.transcript,
                         )
                     except Exception as e:
