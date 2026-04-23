@@ -61,6 +61,67 @@ _ONBOARDING_LABELS: dict[int, str] = {
 }
 
 
+def _extract_name(raw: str) -> str:
+    """Extract a clean first-name token from a Q1 answer.
+
+    Examples:
+      'Mein Name ist Mike.' → 'Mike'
+      'Ich heiße Mike' → 'Mike'
+      'Mike.' → 'Mike'
+      'Ich bin Anna-Lena' → 'Anna-Lena'
+    """
+    import re
+    cleaned = raw.strip().rstrip(".!?,;: ")
+    # Remove common German self-introduction prefixes
+    patterns = [
+        r"^mein\s+name\s+ist\s+",
+        r"^ich\s+heiße\s+",
+        r"^ich\s+heisse\s+",
+        r"^ich\s+bin\s+",
+        r"^mein\s+nam(e)?\s+ist\s+",
+        r"^das\s+bin\s+",
+        r"^ich\s+nenne\s+mich\s+",
+    ]
+    for p in patterns:
+        cleaned = re.sub(p, "", cleaned, flags=re.IGNORECASE)
+    # Take first token (names can include hyphens, keep those)
+    tokens = cleaned.split()
+    if not tokens:
+        return ""
+    return tokens[0].rstrip(".!?,;:")
+
+
+def _extract_primary_hobby(raw: str) -> str:
+    """Extract the primary hobby/interest noun from a Q6 answer.
+
+    Takes the first clearly-content word, stripping common prefixes like
+    'Ich spiele gerne', 'Am Alltag des Studiums gehe ich ins', etc.
+    Returns the first meaningful noun-like token or a short phrase.
+    """
+    import re
+    cleaned = raw.strip().rstrip(".!?,;: ")
+    # Strip common prefixes
+    patterns = [
+        r"^ja,?\s+",
+        r"^ich\s+spiele\s+(gerne\s+)?",
+        r"^ich\s+(gehe|treibe|mache|lese|höre)\s+(gerne\s+)?",
+        r"^am\s+alltag\s+des\s+studiums\s+(gehe\s+ich\s+)?(ins\s+|zum\s+)?",
+        r"^ausserhalb\s+des\s+studiums\s+",
+        r"^außerhalb\s+des\s+studiums\s+",
+        r"^meine\s+hobby(s|ies)?\s+sind\s+",
+        r"^hobby(s|ies)?\s*:\s*",
+    ]
+    for p in patterns:
+        cleaned = re.sub(p, "", cleaned, flags=re.IGNORECASE)
+    # Cut at first "und"/"oder"/"aber" to get primary hobby
+    for sep in [" und ", " oder ", " aber ", ", ", "; "]:
+        idx = cleaned.lower().find(sep)
+        if idx > 0:
+            cleaned = cleaned[:idx]
+            break
+    return cleaned.strip().rstrip(".!?,;:")
+
+
 def _is_valid_onboarding_answer(text: str, q_num: int) -> bool:
     """Return True if the user turn looks like a real answer (not a counter-question or filler)."""
     stripped = text.strip()
@@ -414,9 +475,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "rate": self.input_sample_rate,
                                 },
                                 "transcription": {"model": "gpt-4o-transcribe", "language": "de"},
+                                "noise_reduction": {"type": "far_field"},
                                 "turn_detection": {
                                     "type": "server_vad",
-                                    "threshold": 0.85,
+                                    "threshold": 0.9,
                                     "silence_duration_ms": 2200,
                                     "interrupt_response": True,
                                     "create_response": False,
@@ -620,8 +682,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                             if ob["current_q"] > 7:
                                 # All 7 questions answered
-                                self._lernprofil_name = ob["answers"].get(1, "").strip().rstrip(".!?")
-                                self._lernprofil_hobbies = ob["answers"].get(6, "").strip()
+                                self._lernprofil_name = _extract_name(ob["answers"].get(1, ""))
+                                self._lernprofil_hobbies = _extract_primary_hobby(ob["answers"].get(6, ""))
+                                logger.info("Extracted name=%r hobby=%r",
+                                            self._lernprofil_name, self._lernprofil_hobbies)
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
                                     self._lernprofil_text = profile_text
@@ -710,60 +774,39 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 turns_since_name = (
                                     self._tutoring_turn_count - self._last_name_used_turn
                                 )
-                                # Name: ALWAYS mandate usage in V1. First 3 turns: inject every turn
-                                # (build the habit). After: only if stale (2+ turns).
-                                name_rule = ""
-                                if self._lernprofil_name:
-                                    if self._tutoring_turn_count <= 3 or turns_since_name >= 2:
-                                        name_rule = (
-                                            f"\n✅ PFLICHT — NAMENS-NUTZUNG: Der Studierende heißt '{self._lernprofil_name}'. "
-                                            f"Du MUSST '{self._lernprofil_name}' in DIESER Antwort mindestens einmal direkt ansprechen. "
-                                            f"Natürlich platziert — nicht am Anfang jedes Satzes, aber eingebaut. "
-                                        )
-                                hobby_rule = ""
+                                lines: list[str] = []
+                                # 1) NAME — absolute top, single imperative line.
+                                if self._lernprofil_name and (
+                                    self._tutoring_turn_count <= 3 or turns_since_name >= 2
+                                ):
+                                    lines.append(
+                                        f"NAME JETZT NUTZEN: Sprich '{self._lernprofil_name}' in dieser Antwort genau einmal direkt an."
+                                    )
+                                # 2) HOBBY — only on chosen turns.
                                 if self._lernprofil_hobbies and self._tutoring_turn_count in (2, 5, 9):
-                                    hobby_rule = (
-                                        f"\n✅ PFLICHT — HOBBY-BRÜCKE: Hobby/Interesse ist '{self._lernprofil_hobbies}'. "
-                                        "Wenn sich EINE fachlich passende Analogie aus diesem Bereich anbietet, nutze sie jetzt. "
-                                        "Nur wenn sie wirklich passt — nicht erzwingen. "
+                                    lines.append(
+                                        f"HOBBY-BRÜCKE: Wenn eine natürliche Analogie zu '{self._lernprofil_hobbies}' passt, nutze sie jetzt — nicht erzwingen."
                                     )
-                                doc_rule = ""
+                                # 3) RAG — only when doc uploaded.
                                 if self._document_uploaded:
-                                    doc_rule = (
-                                        "\n✅ PFLICHT — RAG-ZWANG: Der Student hat Unterrichtsmaterial hochgeladen. "
-                                        "Bevor du eine INHALTLICHE Aussage zum Fachthema machst, rufe rag_tool auf. "
-                                        "Zitiere konkret: 'Auf Folie X steht…'. "
-                                        "Erfinde KEINE Beispiele, die nicht in den Folien stehen. "
+                                    lines.append(
+                                        "RAG-PFLICHT: Vor jeder fachlichen Aussage rag_tool aufrufen, dann 'Auf Folie X steht…' zitieren. Nichts erfinden."
                                     )
+                                # 4) Universal turn-shape rules, tight.
+                                lines.extend([
+                                    "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's' / 'wir gehen durch' / 'lass uns anschauen' ohne im selben Satz direkt zu liefern.",
+                                    "KEINE DIREKTE LÖSUNG: Bei 'keine Ahnung' oder falscher Antwort → stelle eine einfachere Teilfrage. Erst nach 2 Fehlversuchen ein kleiner Hinweis.",
+                                    "KEINE KAMERA: Sag nie 'ich sehe'. Für Folien nur rag_tool.",
+                                    "KEIN INFO-DUMP: Max 3 Sätze, ein Gedanke, enden mit Folge-Frage.",
+                                    "KEINE ERFUNDENEN FAKTEN: Unsicher → 'Das weiß ich nicht sicher.'",
+                                    "BEWEGUNG STUMM: Kommentiere Bewegung NIE verbal ('ich hebe den Kopf' ist VERBOTEN). Sprich Antwort → rufe eine Bewegung → Turn zu Ende.",
+                                ])
                                 profile_block = (
-                                    f"\nAKTUELLES LERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
+                                    f"\nLERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
                                     if self._lernprofil_text else ""
                                 )
-                                # KBD mandates FIRST (what drives V1 vs V2 difference),
-                                # THEN universal behavioral prohibitions.
                                 tutoring_instructions = (
-                                    "=== V1 TUTORING TURN ===\n"
-                                    + name_rule
-                                    + hobby_rule
-                                    + doc_rule
-                                    + profile_block
-                                    + "\n--- DIDAKTISCHE VERBOTE ---\n"
-                                    "🚫 KEINE DIREKTEN ANTWORTEN: Bei 'keine Ahnung' / falscher Antwort / Ratlosigkeit → "
-                                    "KEINE Definition, KEIN Beispiel als Lösung. Stelle eine einfachere Teilfrage oder Analogie. "
-                                    "Erst nach 2. Fehlversuch kleiner Hinweis — nie komplette Lösung. "
-                                    "\n🚫 ANKÜNDIGEN OHNE LIEFERN: Nie 'los geht's' / 'lass uns ein Beispiel anschauen' "
-                                    "ohne im SELBEN Absatz direkt zu liefern. "
-                                    "\n🚫 KAMERA-HALLUZINATION: Keine Kamera aktiv. Nie 'ich sehe…' / 'deine Slides sehe ich'. "
-                                    "Bei Folien-Frage: 'Sehen kann ich nicht wie ein Mensch, aber rag_tool hat den Textinhalt.' "
-                                    "\n🚫 INFO-DUMP: 2–4 Sätze max, ein Gedanke pro Turn. Kein 'Erstens… Zweitens…'. "
-                                    "Immer mit Folge-Frage + kurzer Phrase ('Ich bin gespannt.') enden. "
-                                    "\n🚫 FAKTEN ERFINDEN: Keine Zahlen/Namen/Autoren erfinden. Unsicher? 'Das weiß ich nicht sicher.' "
-                                    "\n--- DIDAKTISCHE PFLICHTEN ---\n"
-                                    "✅ EMOTION ZUERST: Frustriert/ratlos? Erst EIN Satz anerkennen, dann Inhalt. "
-                                    "✅ AFFIRMATIONEN SPEZIFISCH: Bei richtiger Antwort konkret benennen WAS erkannt wurde. "
-                                    "Keine Bausteine 'Super!' / 'Genau!' — jedes Mal frisch. "
-                                    "✅ BEWEGUNG AM ENDE: Antwort sprechen → DANN genau EINE Bewegung → Turn Ende. "
-                                    "\n\n" + common_turn_rule
+                                    "\n".join(lines) + "\n" + profile_block + "\n" + common_turn_rule
                                 )
                             else:
                                 tutoring_instructions = common_turn_rule
