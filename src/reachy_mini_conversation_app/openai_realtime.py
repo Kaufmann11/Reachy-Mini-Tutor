@@ -130,6 +130,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             "answers": {},            # {1: "Max", 2: "BWL 3. Sem", ...}
             "profile_injected": False,
         }
+        self._lernprofil_text: str = ""  # Cached LERNPROFIL for per-turn V1 re-injection
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -375,6 +376,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_audio_produced = False
         self._response_create_issued = False
         self._onboarding_q_pending = False
+        self._lernprofil_text = ""
         conv = ConversationManager("student_001")
         user_id = "student_001"
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
@@ -587,6 +589,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # All 7 questions answered
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
+                                    self._lernprofil_text = profile_text
                                     try:
                                         await self.connection.conversation.item.create(
                                             item={
@@ -646,21 +649,33 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "'Nein, ich starte jede Session neu ohne Vorwissen.'"
                                 )
                             elif _profile in V1_PROFILES:
-                                # V1 reminder every turn — enforces KBD + didactic rules
+                                # V1 reminder every turn — full KBD + didactic checklist
+                                # LERNPROFIL re-injected inline so it stays fresh in context
+                                profile_block = (
+                                    f"\n\nAKTUELLES LERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
+                                    if self._lernprofil_text else ""
+                                )
                                 tutoring_instructions = (
                                     common_turn_rule + " "
-                                    "V1-KBD-REGELN (strikt bei JEDER inhaltlichen Antwort): "
-                                    "1. NIE die direkte Antwort auf eine Inhaltsfrage geben. "
-                                    "Bei falscher Antwort, 'keine Ahnung', Unsinn, oder wenn der Studierende ratlos klingt: "
-                                    "stelle eine einfachere Teilfrage, gib eine Analogie, oder frage 'Was weißt du schon dazu?'. "
-                                    "Erst nach dem ZWEITEN gescheiterten Versuch darfst du einen Hinweis andeuten — "
-                                    "und selbst dann nie die volle Lösung servieren. "
-                                    "2. Nutze das LERNPROFIL aktiv: Namen gelegentlich einbauen (mehrfach pro Session), "
-                                    "Humor einsetzen wenn im Profil als gewünscht vermerkt, Hobby-Analogien wenn sie passen, "
-                                    "Frustration SOFORT adressieren bevor du inhaltlich weitergehst. "
-                                    "3. Bei richtiger Antwort: warm und spezifisch bestätigen ('Du hast genau erkannt, dass…'), "
-                                    "Formulierung JEDES Mal variieren — kein Lob-Baustein. "
-                                    "4. Lange Info-Dumps vermeiden — lieber kleine Schritte mit Rückfragen."
+                                    "\n\nV1-KBD-CHECKLISTE — laufe JEDEN Punkt vor jeder Antwort mental durch:\n"
+                                    "[A] SOCRATIC-FIRST: Ist das eine Inhaltsfrage? Dann NIEMALS direkt antworten. "
+                                    "Erst: 'Was glaubst du? Was weißt du schon dazu?' oder eine Leitfrage. "
+                                    "[B] EMOTION ZUERST: Klingt der Student frustriert/ratlos ('keine Ahnung', 'zu schwer', 'keine Lust', genervt)? "
+                                    "Erst kurz Emotion adressieren ('Das ist normal, lass uns anders rangehen.'), DANN Inhalt. "
+                                    "[C] FALSCHE ANTWORT: Nie stillschweigend weiterziehen und nie direkt korrigieren. "
+                                    "'Interessant — was hat dich dazu gebracht?' Guide bis der Student selbst drauf kommt. "
+                                    "[D] 'KEINE AHNUNG'/UNSINN: Einfachere Teilfrage oder Analogie. "
+                                    "Erst nach dem ZWEITEN Fehlversuch darfst du einen Hinweis andeuten — nie die volle Lösung. "
+                                    "[E] RICHTIGE ANTWORT: Spezifisch + warm + Formulierung JEDES Mal neu. "
+                                    "Kein Lob-Baustein wie 'super!' oder 'richtig!' — benenne konkret WAS der Student erkannt hat. "
+                                    "[F] LERNPROFIL AKTIV: Namen mehrmals pro Session einbauen (nicht nur 1×). "
+                                    "Hobby-Analogie wenn sie fachlich passt. Humor-Ton NUR wenn Profil es als gewünscht vermerkt. "
+                                    "Studium/Semester als Kontext für Beispiele. "
+                                    "[G] KURZ BLEIBEN: 2–4 Sätze max. NIE Info-Dump. Immer mit Folge-Frage enden + kurzer Phrase ('Ich bin gespannt, was du sagst.'). "
+                                    "[H] HONEST LIMITS: Unsicher? 'Das weiß ich nicht sicher.' Erfinde nichts. "
+                                    "[I] KEINE KAMERA: Nach Sehen gefragt? 'In dieser Session habe ich keine Kamera.' "
+                                    "[J] TOOL-TRANSPARENZ: Nur reale Tools (play_emotion, stop_emotion, move_head, head_tracking, camera, rag_tool). Nie erfinden."
+                                    + profile_block
                                 )
                             else:
                                 tutoring_instructions = common_turn_rule
