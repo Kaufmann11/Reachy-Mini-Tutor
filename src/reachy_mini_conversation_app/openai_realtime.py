@@ -393,7 +393,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "turn_detection": {
                                     "type": "server_vad",
                                     "threshold": 0.85,
-                                    "silence_duration_ms": 800,
+                                    "silence_duration_ms": 1500,
                                     "interrupt_response": True,
                                     "create_response": False,
                                 },
