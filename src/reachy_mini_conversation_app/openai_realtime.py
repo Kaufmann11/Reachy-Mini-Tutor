@@ -37,9 +37,9 @@ _pending_document_context: str = ""
 # V1 profiles that use the KBD framework and full onboarding
 V1_PROFILES: frozenset[str] = frozenset({"tutor_buddy", "tutor_coach", "tutor_professor", "tutor_socratic"})
 
-# Exact text for each onboarding question — spoken verbatim via ephemeral responses.
-# Using conversation="none" isolates each Q from the main conversation context,
-# so the model has no prior user turn to acknowledge.
+# Exact text for each onboarding question. The model asks these verbatim,
+# with a brief one-sentence acknowledgment of the student's previous answer
+# inserted before each question (except Q1).
 _ONBOARDING_Q_INSTRUCTIONS: dict[int, str] = {
     1: "Hallo! Ich bin Reachy, dein Lernbegleiter. Bevor wir starten, habe ich kurz ein paar Fragen. Wie heißt du?",
     2: "Was studierst du, und in welchem Semester bist du gerade?",
@@ -122,7 +122,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.is_idle_tool_call = False
         self._response_audio_produced = False   # True once audio.delta fires in current response
         self._response_create_issued = False    # True if tool handler already called response.create
-        self._ephemeral_q_active = False        # True while an ephemeral onboarding Q response is running
         # Onboarding state machine — reset at the start of every session
         self._onboarding: dict = {
             "phase": "onboarding",    # "onboarding" | "tutoring"
@@ -301,44 +300,54 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         except Exception as e:
             logger.warning("_restart_session failed: %s", e)
 
-    async def _ask_onboarding_question(self, q_num: int) -> None:
-        """Speak an onboarding question using an ephemeral (out-of-band) response.
+    async def _ask_onboarding_question(self, q_num: int, reask: bool = False) -> None:
+        """Trigger a regular response that asks onboarding question q_num verbatim.
 
-        Uses conversation="none" so the model receives NO prior conversation context —
-        it cannot acknowledge a user's previous answer. The exact question text is
-        injected as an assistant item into the main conversation for history coherence.
+        For Q2–Q7, the model also briefly acknowledges the student's previous answer
+        (one short sentence) before asking the next question. For Q1, the model just
+        asks the question after the student's greeting. For re-asks (invalid answer),
+        the model asks the same question again in a friendly way.
+
+        The response runs with full conversation context so the model can see what the
+        student just said. The per-response instructions force the exact question text.
         """
         if not self.connection:
             return
         question_text = _ONBOARDING_Q_INSTRUCTIONS[q_num]
-        try:
-            # Inject the question into main conversation history (for context coherence after Q7)
-            await self.connection.conversation.item.create(
-                item={
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": question_text}],
-                }
+
+        if q_num == 1:
+            instructions = (
+                "Die/Der Studierende hat gerade die Unterhaltung begonnen (z.B. mit 'Hallo'). "
+                f"Stelle jetzt GENAU diese Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
+                "Keine Einleitung davor, keine Umformulierung, keine zusätzliche Erklärung. "
+                "Nur genau diesen Satz sprechen."
             )
-            # Speak via isolated ephemeral response — model has no conversation context to acknowledge
-            self._ephemeral_q_active = True
+        elif reask:
+            instructions = (
+                "Die/Der Studierende hat nicht klar auf die letzte Frage geantwortet. "
+                f"Stelle die gleiche Frage freundlich nochmal, GENAU so, Wort für Wort:\n\n\"{question_text}\"\n\n"
+                "Keine Umformulierung."
+            )
+        else:
+            prev_label = _ONBOARDING_LABELS.get(q_num - 1, "")
+            instructions = (
+                f"Die/Der Studierende hat gerade auf deine Frage zu '{prev_label}' geantwortet. "
+                "Gehe ganz kurz auf die Antwort ein — EIN Satz, warm und spezifisch zu dem was gesagt wurde. "
+                "Kein leeres Lob, keine Floskel. "
+                f"Stelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
+                "Die Frage muss wörtlich genau so vorkommen. Keine Umformulierung, keine zusätzlichen Erklärungen, "
+                "keine Aufzählung anderer Themen."
+            )
+        try:
+            self._response_create_issued = True
             await self.connection.response.create(
                 response={
-                    "conversation": "none",
-                    "input": [
-                        {
-                            "type": "message",
-                            "role": "user",
-                            "content": [{"type": "input_text", "text": question_text}],
-                        }
-                    ],
-                    "instructions": "You are a text-to-speech engine. Speak the user message exactly as given — no additions, no changes.",
-                    "tool_choice": "none",
+                    "instructions": instructions,
+                    "tool_choice": "auto",
                 }
             )
-            logger.info("Asked onboarding Q%d via ephemeral response", q_num)
+            logger.info("Asked onboarding Q%d (reask=%s)", q_num, reask)
         except Exception as e:
-            self._ephemeral_q_active = False
             logger.warning("Onboarding Q%d ask failed: %s", q_num, e)
 
     async def _run_realtime_session(self) -> None:
@@ -352,7 +361,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         }
         self._response_audio_produced = False
         self._response_create_issued = False
-        self._ephemeral_q_active = False
         conv = ConversationManager("student_001")
         user_id = "student_001"
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
@@ -456,8 +464,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self._onboarding["current_q"],
                     )
                     # Guardrail: model produced no audio AND no response.create was already triggered.
-                    # Skip if an ephemeral Q response just completed (it handles its own audio).
-                    if not self._ephemeral_q_active and not self._response_audio_produced and not self._response_create_issued and self.connection:
+                    if not self._response_audio_produced and not self._response_create_issued and self.connection:
                         _gp = self._onboarding["phase"]
                         _gq = self._onboarding["current_q"]
                         _gcur = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
@@ -480,7 +487,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 )
                             except Exception as e:
                                 logger.warning("Tutoring guardrail failed: %s", e)
-                    self._ephemeral_q_active = False
                     self._response_audio_produced = False
                     self._response_create_issued = False
 
@@ -551,7 +557,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         text = event.transcript.strip()
 
                         if q == 0:
-                            # User said something — they initiated. Ask Q1 via ephemeral response.
+                            # User said something — they initiated. Ask Q1.
                             ob["current_q"] = 1
                             logger.info("User initiated conversation — triggering Q1 (profile=%s)", _profile)
                             await self._ask_onboarding_question(1)
@@ -596,14 +602,14 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     # V2: no profile injection, go straight to tutoring
                                     await self.connection.response.create(response={})
                             else:
-                                # Ask next question via ephemeral response
+                                # Ask next question — model will briefly acknowledge the answer first
                                 next_q = ob["current_q"]
                                 await self._ask_onboarding_question(next_q)
                                 logger.info("Triggered Q%d (profile=%s)", next_q, _profile)
                         else:
-                            # Answer not valid — re-ask same question via ephemeral response
+                            # Answer not valid — re-ask the same question
                             logger.info("Onboarding Q%d: invalid answer %r — re-asking", q, text)
-                            await self._ask_onboarding_question(q)
+                            await self._ask_onboarding_question(q, reask=True)
                     else:
                         # Tutoring phase or non-tutor profile: normal response
                         # Hint: speak first, then call movement tool — reduces move_head-only responses
@@ -615,23 +621,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 # Handle assistant transcription
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
                     logger.debug(f"Assistant transcript: {event.transcript}")
-                    # Skip conv logging for ephemeral onboarding Q responses — they are already
-                    # injected as assistant items via conversation.item.create
-                    if not self._ephemeral_q_active:
-                        conv.add("assistant", event.transcript)
-                        conv.save()
-                        try:
-                            profile = get_profile(user_id)
-                            log_turn(
-                                user_id=user_id,
-                                study_buddy_style=profile.get("study_buddy_style", ""),
-                                assertiveness=profile.get("assertiveness", ""),
-                                session={},
-                                user_text=last_user_text if "last_user_text" in dir() else "",
-                                assistant_text=event.transcript,
-                            )
-                        except Exception as e:
-                            logger.warning(f"Metrics logging failed: {e}")
+                    conv.add("assistant", event.transcript)
+                    conv.save()
+                    try:
+                        profile = get_profile(user_id)
+                        log_turn(
+                            user_id=user_id,
+                            study_buddy_style=profile.get("study_buddy_style", ""),
+                            assertiveness=profile.get("assertiveness", ""),
+                            session={},
+                            user_text=last_user_text if "last_user_text" in dir() else "",
+                            assistant_text=event.transcript,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Metrics logging failed: {e}")
                     await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": event.transcript}))
 
                 # Handle audio delta
