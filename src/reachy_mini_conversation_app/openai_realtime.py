@@ -284,6 +284,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_create_issued = False    # True if tool handler already called response.create
         self._onboarding_q_pending = False      # True while an onboarding-Q response is being generated
         self._movement_dispatched_this_response = False  # True after first movement tool dispatched in current response
+        self._movement_blocked_until_user_input = False  # True after any movement; cleared on next user speech
         # Onboarding state machine — reset at the start of every session
         self._onboarding: dict = {
             "phase": "onboarding",    # "onboarding" | "tutoring"
@@ -554,6 +555,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_create_issued = False
         self._onboarding_q_pending = False
         self._movement_dispatched_this_response = False
+        self._movement_blocked_until_user_input = False
         self._q_lock_release_task: asyncio.Task | None = None
         self._lernprofil_text = ""
         self._lernprofil_name = ""
@@ -644,6 +646,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if self.deps.head_wobbler is not None:
                         self.deps.head_wobbler.reset()
                     self.deps.movement_manager.set_listening(True)
+                    self._movement_blocked_until_user_input = False
                     logger.debug("User speech started")
 
                 if event.type == "input_audio_buffer.speech_stopped":
@@ -1001,8 +1004,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     # session. Swallow extras — the first movement already played.
                     _MOVEMENT_TOOL_NAMES = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
                     if tool_name in _MOVEMENT_TOOL_NAMES:
-                        if self._movement_dispatched_this_response:
-                            logger.debug("Skipping duplicate movement tool '%s' in same response", tool_name)
+                        if self._movement_dispatched_this_response or self._movement_blocked_until_user_input:
+                            reason = "same response" if self._movement_dispatched_this_response else "no user input since last movement"
+                            logger.debug("Skipping movement tool '%s' (%s)", tool_name, reason)
                             if isinstance(call_id, str):
                                 try:
                                     await self.connection.conversation.item.create(
@@ -1016,6 +1020,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     logger.debug("Failed to ack skipped movement tool: %s", e)
                             continue
                         self._movement_dispatched_this_response = True
+                        self._movement_blocked_until_user_input = True
 
                     try:
                         tool_result = await dispatch_tool_call(tool_name, args_json_str, self.deps)
