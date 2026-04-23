@@ -586,21 +586,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 ob["phase"] = "tutoring"
                                 logger.info("Onboarding complete → tutoring (profile=%s)", _profile)
 
-                                if _profile in V1_PROFILES:
-                                    await self.connection.response.create(
-                                        response={
-                                            "instructions": (
-                                                "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese zwei Fragen — eine nach der anderen, in einer Antwort: "
-                                                "1. 'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
-                                                "2. 'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
-                                                "Stelle beide Fragen kurz und natürlich. Keine Prüfungs-Annahmen. Noch nicht lehren."
-                                            ),
-                                            "tool_choice": "auto",
-                                        }
-                                    )
-                                else:
-                                    # V2: no profile injection, go straight to tutoring
-                                    await self.connection.response.create(response={})
+                                # Same post-onboarding follow-ups for V1 and V2 (identical introduction).
+                                # V1 uses the answers via LERNPROFIL + KBD; V2 hears them but must not reference them later.
+                                await self.connection.response.create(
+                                    response={
+                                        "instructions": (
+                                            "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese zwei Fragen — eine nach der anderen, in einer Antwort: "
+                                            "1. 'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
+                                            "2. 'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
+                                            "Stelle beide Fragen kurz und natürlich. Keine Prüfungs-Annahmen. Noch nicht lehren."
+                                        ),
+                                        "tool_choice": "auto",
+                                    }
+                                )
                             else:
                                 # Ask next question — model will briefly acknowledge the answer first
                                 next_q = ob["current_q"]
