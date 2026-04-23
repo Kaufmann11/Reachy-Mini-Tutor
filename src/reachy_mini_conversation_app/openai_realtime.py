@@ -283,6 +283,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_audio_produced = False   # True once audio.delta fires in current response
         self._response_create_issued = False    # True if tool handler already called response.create
         self._onboarding_q_pending = False      # True while an onboarding-Q response is being generated
+        self._movement_dispatched_this_response = False  # True after first movement tool dispatched in current response
         # Onboarding state machine — reset at the start of every session
         self._onboarding: dict = {
             "phase": "onboarding",    # "onboarding" | "tutoring"
@@ -552,6 +553,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_audio_produced = False
         self._response_create_issued = False
         self._onboarding_q_pending = False
+        self._movement_dispatched_this_response = False
         self._q_lock_release_task: asyncio.Task | None = None
         self._lernprofil_text = ""
         self._lernprofil_name = ""
@@ -658,6 +660,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 if event.type == "response.created":
                     logger.debug("Response created")
+                    self._movement_dispatched_this_response = False
 
                 # Track conversation items during onboarding so we can delete them
                 # for V2 (tutor_basic) once onboarding ends — that literally removes
@@ -990,6 +993,29 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if not isinstance(tool_name, str) or not isinstance(args_json_str, str):
                         logger.error("Invalid tool call: tool_name=%s, args=%s", tool_name, args_json_str)
                         continue
+
+                    # Guard: only one movement tool may fire per response. The model
+                    # sometimes emits multiple movement calls in a single response; the
+                    # first dispatch cancels the response, but queued calls still arrive
+                    # here and would fire silently, flooding the robot and freezing the
+                    # session. Swallow extras — the first movement already played.
+                    _MOVEMENT_TOOL_NAMES = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
+                    if tool_name in _MOVEMENT_TOOL_NAMES:
+                        if self._movement_dispatched_this_response:
+                            logger.debug("Skipping duplicate movement tool '%s' in same response", tool_name)
+                            if isinstance(call_id, str):
+                                try:
+                                    await self.connection.conversation.item.create(
+                                        item={
+                                            "type": "function_call_output",
+                                            "call_id": call_id,
+                                            "output": json.dumps({"status": "done"}),
+                                        },
+                                    )
+                                except Exception as e:
+                                    logger.debug("Failed to ack skipped movement tool: %s", e)
+                            continue
+                        self._movement_dispatched_this_response = True
 
                     try:
                         tool_result = await dispatch_tool_call(tool_name, args_json_str, self.deps)
