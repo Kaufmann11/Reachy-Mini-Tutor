@@ -122,6 +122,101 @@ def _extract_primary_hobby(raw: str) -> str:
     return cleaned.strip().rstrip(".!?,;:")
 
 
+# Reactive triggers — regex patterns on last user turn.
+# When a pattern matches, a mandatory instruction is prepended to the V1 per-turn prompt.
+# Deterministic in code: if the signal is there, the mandate fires.
+_TRIGGERS: dict[str, str] = {
+    "frustration": r"\b(kein(en)?\s+(bock|lust)|zu\s+(viel|schwer|schwierig|schnell)|überfordert|schaffe\s+ich\s+nie|ich\s+kann\s+das\s+nicht|hab\s+keine\s+kraft|bin\s+müde|keine\s+energie)\b",
+    "no_idea":     r"\b(keine\s+ahnung|weiß\s+(es\s+)?nicht|weiss\s+(es\s+)?nicht|hab\s+keine\s+idee|ich\s+weiß\s+nicht)\b",
+    "confusion":   r"\b(versteh(e)?\s+(ich\s+)?nicht|hä\??|was\s+meinst\s+du|kapier(e)?\s+nicht|check\s+ich\s+nicht)\b",
+    "identity":    r"\b(bist\s+du\s+(ein\s+)?(mensch|echte?r?\s+(person|mensch))|bist\s+du\s+(eine\s+)?(ai|ki|bot)|wirklich\s+ein\s+roboter)\b",
+    "camera":      r"\b(siehst\s+du|kannst\s+du\s+(das\s+)?sehen|sieh\s+(dir\s+)?an|auf\s+(der|meiner)\s+folie|zeig\s+(ich|dir)\s+dir|guck\s+mal)\b",
+    "content_q":   r"\b(erkläre?\s+mir|was\s+(ist|bedeutet|heißt)|wie\s+funktioniert|definier(e)?|erklär\s+mir)\b",
+    "exam":        r"\b(klausur|prüfung|hausaufgabe|aufgabe\s+lösen|lösung\s+der\s+aufgabe|musterlösung)\b",
+}
+
+
+def _build_reactive_mandates(
+    user_text: str,
+    profile_data: dict,
+    name: str,
+) -> tuple[list[str], list[str]]:
+    """Detect reactive signals in the user's last turn and build mandatory instructions.
+
+    Returns (mandates, fired_triggers) — mandates are imperative lines to prepend to
+    the per-turn prompt; fired_triggers is the list of trigger names for logging.
+    Mandates are built with LERNPROFIL data (motivation, session_goal) where relevant.
+    """
+    import re
+    if not user_text:
+        return [], []
+    text_lower = user_text.lower()
+    mandates: list[str] = []
+    fired: list[str] = []
+
+    motivation = (profile_data.get(3) or "").strip()
+    session_goal = (profile_data.get(7) or "").strip()
+
+    for name_key, pattern in _TRIGGERS.items():
+        if re.search(pattern, text_lower, flags=re.IGNORECASE):
+            fired.append(name_key)
+
+    if "frustration" in fired:
+        # Tie motivation/goal into the reframe — makes it personal, not generic
+        context_anchor = ""
+        if session_goal:
+            context_anchor = f" Erinnere konkret an sein Ziel: '{session_goal}'."
+        elif motivation:
+            context_anchor = f" Erinnere an seine Motivation: '{motivation}'."
+        mandates.append(
+            f"REAKTIV — FRUSTRATION: {name or 'Der Student'} äußert Frust/Überforderung. "
+            f"Beginne mit EINEM Satz echter emotionaler Anerkennung (nicht floskelhaft), "
+            f"DANN ein konkreter, kleiner nächster Schritt.{context_anchor} "
+            f"Mitfühlend, nicht belehrend, nicht abwiegeln."
+        )
+
+    if "no_idea" in fired:
+        mandates.append(
+            "REAKTIV — UNSICHERHEIT: Der Student sagt, er weiß es nicht. "
+            "KEINE Lösung geben. Stelle EINE einfachere Teilfrage, die einen konkreten Schritt zurückgeht "
+            "oder eine Alltags-Analogie anbietet. Erst nach dem 2. Fehlversuch ein winziger Hinweis."
+        )
+
+    if "confusion" in fired:
+        mandates.append(
+            "REAKTIV — VERWIRRUNG: Formuliere deinen letzten Gedanken in einfacheren Worten neu — "
+            "andere Wortwahl, konkrete Analogie. NICHT dieselben Wörter wiederholen."
+        )
+
+    if "identity" in fired:
+        mandates.append(
+            "REAKTIV — IDENTITÄT: Antworte EHRLICH: 'Ich bin Reachy Mini, ein Roboter mit KI.' "
+            "Kurz, ohne Umschweife. KEIN Ausweichen, KEINE Rolle spielen."
+        )
+
+    if "camera" in fired:
+        mandates.append(
+            "REAKTIV — KAMERA: In dieser Session ist KEINE Kamera aktiv. "
+            "Sag das ehrlich: 'Sehen kann ich in dieser Session nicht.' "
+            "Falls Folien hochgeladen: 'Ich kann den Text der Folien über rag_tool abrufen.'"
+        )
+
+    if "content_q" in fired:
+        mandates.append(
+            "REAKTIV — INHALTSFRAGE: BEVOR du erklärst, stelle EINE aktivierende Gegenfrage: "
+            "'Was weißt du schon dazu?' oder 'Was ist dein erster Gedanke?' "
+            "So öffnest du den Socratic-Dialog statt direkt Wissen abzuladen."
+        )
+
+    if "exam" in fired:
+        mandates.append(
+            "REAKTIV — PRÜFUNG/AUFGABE: KEINE komplette Lösung oder Musterantwort geben. "
+            "Führe durch den Denkweg mit Fragen. Der Student muss selbst drauf kommen."
+        )
+
+    return mandates, fired
+
+
 def _is_valid_onboarding_answer(text: str, q_num: int) -> bool:
     """Return True if the user turn looks like a real answer (not a counter-question or filler)."""
     stripped = text.strip()
@@ -775,7 +870,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     self._tutoring_turn_count - self._last_name_used_turn
                                 )
                                 lines: list[str] = []
-                                # 1) NAME — absolute top, single imperative line.
+                                # 0) REACTIVE MANDATES — must-fire based on signals in user's last turn.
+                                # Built in code, prepended at absolute top so they win over any other rule.
+                                reactive_mandates, fired_triggers = _build_reactive_mandates(
+                                    last_user_text if "last_user_text" in dir() else "",
+                                    self._onboarding.get("answers", {}),
+                                    self._lernprofil_name,
+                                )
+                                if fired_triggers:
+                                    logger.info(
+                                        "V1 reactive triggers fired turn=%d profile=%s triggers=%s",
+                                        self._tutoring_turn_count, _profile, fired_triggers,
+                                    )
+                                lines.extend(reactive_mandates)
+                                # 1) NAME — single imperative line.
                                 if self._lernprofil_name and (
                                     self._tutoring_turn_count <= 3 or turns_since_name >= 2
                                 ):
