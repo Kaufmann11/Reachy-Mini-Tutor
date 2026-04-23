@@ -317,7 +317,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 item={
                     "type": "message",
                     "role": "assistant",
-                    "content": [{"type": "text", "text": question_text}],
+                    "content": [{"type": "output_text", "text": question_text}],
                 }
             )
             # Speak via isolated ephemeral response — model has no conversation context to acknowledge
@@ -334,7 +334,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     ],
                     "instructions": "You are a text-to-speech engine. Speak the user message exactly as given — no additions, no changes.",
                     "tool_choice": "none",
-                    "modalities": ["audio", "text"],
                 }
             )
             logger.info("Asked onboarding Q%d via ephemeral response", q_num)
