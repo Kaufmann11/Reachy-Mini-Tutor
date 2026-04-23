@@ -122,6 +122,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.is_idle_tool_call = False
         self._response_audio_produced = False   # True once audio.delta fires in current response
         self._response_create_issued = False    # True if tool handler already called response.create
+        self._onboarding_q_pending = False      # True while an onboarding-Q response is being generated
         # Onboarding state machine — reset at the start of every session
         self._onboarding: dict = {
             "phase": "onboarding",    # "onboarding" | "tutoring"
@@ -320,26 +321,30 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 "Die/Der Studierende hat gerade die Unterhaltung begonnen (z.B. mit 'Hallo'). "
                 f"Stelle jetzt GENAU diese Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
                 "Keine Einleitung davor, keine Umformulierung, keine zusätzliche Erklärung. "
-                "Nur genau diesen Satz sprechen."
+                "Nur genau diesen Satz sprechen. Stelle in dieser Antwort NUR diese eine Frage."
             )
         elif reask:
             instructions = (
                 "Die/Der Studierende hat nicht klar auf die letzte Frage geantwortet. "
                 f"Stelle die gleiche Frage freundlich nochmal, GENAU so, Wort für Wort:\n\n\"{question_text}\"\n\n"
-                "Keine Umformulierung."
+                "Keine Umformulierung. Stelle in dieser Antwort NUR diese eine Frage."
             )
         else:
             prev_label = _ONBOARDING_LABELS.get(q_num - 1, "")
             instructions = (
                 f"Die/Der Studierende hat gerade auf deine Frage zu '{prev_label}' geantwortet. "
-                "Gehe ganz kurz auf die Antwort ein — EIN Satz, warm und spezifisch zu dem was gesagt wurde. "
+                "Gehe ganz kurz auf die Antwort ein — EIN Satz, warm und spezifisch zu dem was tatsächlich gesagt wurde. "
                 "Kein leeres Lob, keine Floskel. "
+                "WICHTIG: Erfinde KEINE Informationen, die der Studierende nicht gesagt hat. "
+                "Wenn die Antwort unverständlich, unklar oder unsinnig wirkt, sage genau EINEN Satz wie "
+                "'Ich habe das nicht ganz verstanden.' OHNE etwas zu erfinden — und stelle dann trotzdem die nächste Frage. "
                 f"Stelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
                 "Die Frage muss wörtlich genau so vorkommen. Keine Umformulierung, keine zusätzlichen Erklärungen, "
-                "keine Aufzählung anderer Themen."
+                "keine Aufzählung anderer Themen. Stelle in dieser Antwort NUR diese eine Frage — keine zweite Frage."
             )
         try:
             self._response_create_issued = True
+            self._onboarding_q_pending = True
             await self.connection.response.create(
                 response={
                     "instructions": instructions,
@@ -348,6 +353,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             )
             logger.info("Asked onboarding Q%d (reask=%s)", q_num, reask)
         except Exception as e:
+            self._onboarding_q_pending = False
             logger.warning("Onboarding Q%d ask failed: %s", q_num, e)
 
     async def _run_realtime_session(self) -> None:
@@ -361,6 +367,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         }
         self._response_audio_produced = False
         self._response_create_issued = False
+        self._onboarding_q_pending = False
         conv = ConversationManager("student_001")
         user_id = "student_001"
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
@@ -489,6 +496,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 logger.warning("Tutoring guardrail failed: %s", e)
                     self._response_audio_produced = False
                     self._response_create_issued = False
+                    # Release single-flight lock: a Q response just finished
+                    self._onboarding_q_pending = False
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -556,6 +565,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         q = ob["current_q"]
                         text = event.transcript.strip()
 
+                        # Single-flight lock: if a Q response is still being generated,
+                        # drop this transcript. Otherwise rapid-fire utterances cause
+                        # multiple state advances and double-questions.
+                        if self._onboarding_q_pending:
+                            logger.info(
+                                "Onboarding Q%d still pending — dropping transcript %r",
+                                q, text,
+                            )
+                            continue
+
                         if q == 0:
                             # User said something — they initiated. Ask Q1.
                             ob["current_q"] = 1
@@ -612,8 +631,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # Tutoring phase or non-tutor profile: normal response
                         # Hint: speak first, then call movement tool — reduces move_head-only responses
                         if self.connection:
+                            if _profile == "tutor_basic":
+                                # V2 reminder every turn — prevents leakage of onboarding info
+                                tutoring_instructions = (
+                                    "Antworte dem Studenten. Sprich zuerst aus, dann Bewegung. "
+                                    "STRIKT: Du bist die Kontrollbedingung (V2). Erwähne KEINE Onboarding-Infos "
+                                    "(Name, Hobby, Studium, Semester, Motivation, Lernstil, Lernziel, Wissensstand). "
+                                    "Verwende sie auch NICHT implizit, um Beispiele oder Ton anzupassen. "
+                                    "Wenn der Studierende fragt 'weißt du noch X?' oder ähnlich — antworte: "
+                                    "'Nein, ich starte jede Session neu ohne Vorwissen.'"
+                                )
+                            else:
+                                tutoring_instructions = "Antworte dem Studenten. Sprich zuerst aus, dann Bewegung."
                             await self.connection.response.create(
-                                response={"instructions": "Antworte dem Studenten. Sprich zuerst aus, dann Bewegung.", "tool_choice": "auto"}
+                                response={"instructions": tutoring_instructions, "tool_choice": "auto"}
                             )
 
                 # Handle assistant transcription
