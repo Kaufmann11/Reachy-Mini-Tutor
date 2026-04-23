@@ -335,9 +335,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 f"Die/Der Studierende hat gerade auf deine Frage zu '{prev_label}' geantwortet. "
                 "Gehe ganz kurz auf die Antwort ein — EIN Satz, warm und spezifisch zu dem was tatsächlich gesagt wurde. "
                 "Kein leeres Lob, keine Floskel. "
-                "WICHTIG: Erfinde KEINE Informationen, die der Studierende nicht gesagt hat. "
-                "Wenn die Antwort unverständlich, unklar oder unsinnig wirkt, sage genau EINEN Satz wie "
-                "'Ich habe das nicht ganz verstanden.' OHNE etwas zu erfinden — und stelle dann trotzdem die nächste Frage. "
+                "WICHTIG zur Antwort-Verarbeitung: "
+                "Wenn die Antwort eine erkennbare Information enthält (Name, Studium, Hobby, Lernstil, Ziel etc.) — "
+                "auch wenn sie eingebettet in Füllwörter, Abschweifungen oder kleine Versprecher ist — "
+                "extrahiere diese Information und benutze sie in deiner kurzen Reaktion. "
+                "Beispiel: 'Trotzdem, mein Name ist Mike.' → 'Hallo Mike, freut mich!' "
+                "Beispiel: 'Ich studiere nicht mehr, vor zwei Jahren Marketing abgeschlossen.' → 'Ah, Marketing-Background!' "
+                "Erfinde NIE Fakten, die nicht gesagt wurden (z.B. ein Semester wenn keines genannt wurde). "
+                "NUR wenn die Antwort komplett leer oder reines Kauderwelsch ist (kein einziges sinnvolles Wort), "
+                "sage EINEN Satz: 'Ich habe das nicht ganz verstanden.' und stelle dann trotzdem die nächste Frage. "
                 f"Stelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
                 "Die Frage muss wörtlich genau so vorkommen. Keine Umformulierung, keine zusätzlichen Erklärungen, "
                 "keine Aufzählung anderer Themen. Stelle in dieser Antwort NUR diese eine Frage — keine zweite Frage."
@@ -385,7 +391,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "transcription": {"model": "gpt-4o-transcribe", "language": "de"},
                                 "turn_detection": {
                                     "type": "server_vad",
-                                    "threshold": 0.7,
+                                    "threshold": 0.85,
                                     "silence_duration_ms": 800,
                                     "interrupt_response": True,
                                     "create_response": False,
@@ -470,30 +476,21 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self._onboarding["phase"],
                         self._onboarding["current_q"],
                     )
-                    # Guardrail: model produced no audio AND no response.create was already triggered.
+                    # Guardrail: only for onboarding — re-ask the current Q if model produced no audio.
+                    # In tutoring phase we deliberately stay silent rather than auto-prompting,
+                    # because auto-prompts cause Reachy to "talk to himself" during user silence.
                     if not self._response_audio_produced and not self._response_create_issued and self.connection:
                         _gp = self._onboarding["phase"]
                         _gq = self._onboarding["current_q"]
                         _gcur = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
                         _gtutor = _gcur in V1_PROFILES or _gcur == "tutor_basic"
                         if _gp == "onboarding" and _gtutor and 1 <= _gq <= 7:
-                            # current_q==0 means waiting for user to initiate — no guardrail needed
                             logger.warning("No audio in onboarding — re-asking Q%d", _gq)
                             try:
                                 await self._ask_onboarding_question(_gq)
                             except Exception as e:
                                 logger.warning("Onboarding guardrail failed: %s", e)
-                        elif _gp == "tutoring":
-                            logger.warning("No audio in tutoring — triggering guardrail speech")
-                            try:
-                                await self.connection.response.create(
-                                    response={
-                                        "instructions": "Der Student wartet auf deine Antwort. Sprich jetzt.",
-                                        "tool_choice": "none",
-                                    }
-                                )
-                            except Exception as e:
-                                logger.warning("Tutoring guardrail failed: %s", e)
+                        # else: tutoring phase → stay silent, wait for user
                     self._response_audio_produced = False
                     self._response_create_issued = False
                     # Release single-flight lock: a Q response just finished
@@ -631,10 +628,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # Tutoring phase or non-tutor profile: normal response
                         # Hint: speak first, then call movement tool — reduces move_head-only responses
                         if self.connection:
+                            common_turn_rule = (
+                                "Antworte dem Studenten. Sprich zuerst deine vollständige Antwort aus, "
+                                "rufe DANACH genau EINE Bewegung (move_head oder play_emotion) auf — "
+                                "und beende danach deinen Turn. Sprich NICHTS mehr nach der Bewegung. "
+                                "Die Bewegung markiert das Ende deiner Antwort."
+                            )
                             if _profile == "tutor_basic":
                                 # V2 reminder every turn — prevents leakage of onboarding info
                                 tutoring_instructions = (
-                                    "Antworte dem Studenten. Sprich zuerst aus, dann Bewegung. "
+                                    common_turn_rule + " "
                                     "STRIKT: Du bist die Kontrollbedingung (V2). Erwähne KEINE Onboarding-Infos "
                                     "(Name, Hobby, Studium, Semester, Motivation, Lernstil, Lernziel, Wissensstand). "
                                     "Verwende sie auch NICHT implizit, um Beispiele oder Ton anzupassen. "
@@ -642,7 +645,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "'Nein, ich starte jede Session neu ohne Vorwissen.'"
                                 )
                             else:
-                                tutoring_instructions = "Antworte dem Studenten. Sprich zuerst aus, dann Bewegung."
+                                tutoring_instructions = common_turn_rule
                             await self.connection.response.create(
                                 response={"instructions": tutoring_instructions, "tool_choice": "auto"}
                             )

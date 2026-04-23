@@ -62,6 +62,7 @@ Two tools available: play_emotion (full-body animation), move_head (direction: l
 - Use movement to express curiosity and reflection — it supports the Socratic atmosphere.
 - Call move_head or play_emotion in EVERY response — mandatory, curious and natural.
 - Always finish your full spoken sentence BEFORE calling a movement tool — never mid-sentence.
+- The movement tool call marks the END of your turn. After the tool call, your response is OVER. Never speak again after a movement tool — wait for the student.
 - Never call tools while waiting or listening to the student.
 - NEVER invent tool names — only: play_emotion, stop_emotion, move_head, head_tracking, camera, rag_tool
 - Do NOT announce movement verbally.
