@@ -140,6 +140,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._tutoring_turn_count: int = 0  # Bot tutoring turns since onboarding
         self._last_name_used_turn: int = -99  # Turn index when name was last spoken
         self._document_uploaded: bool = False  # True once student uploaded any doc
+        self._onboarding_item_ids: list[str] = []  # V2: delete these to erase onboarding context
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -397,6 +398,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._tutoring_turn_count = 0
         self._last_name_used_turn = -99
         self._document_uploaded = False
+        self._onboarding_item_ids = []
         conv = ConversationManager("student_001")
         user_id = "student_001"
         async with self.client.realtime.connect(model=config.MODEL_NAME) as conn:
@@ -490,6 +492,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                 if event.type == "response.created":
                     logger.debug("Response created")
+
+                # Track conversation items during onboarding so we can delete them
+                # for V2 (tutor_basic) once onboarding ends — that literally removes
+                # the name/hobbies from GPT-4o's visible context.
+                if event.type == "conversation.item.created":
+                    if self._onboarding["phase"] == "onboarding":
+                        item = getattr(event, "item", None)
+                        item_id = getattr(item, "id", None) if item is not None else None
+                        if isinstance(item_id, str):
+                            self._onboarding_item_ids.append(item_id)
 
                 if event.type == "response.done":
                     logger.debug(
@@ -608,13 +620,24 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                             if ob["current_q"] > 7:
                                 # All 7 questions answered
-                                # Always cache name/hobbies — V1 uses them, V2 uses them
-                                # as explicit forbidden tokens in per-turn instruction.
                                 self._lernprofil_name = ob["answers"].get(1, "").strip().rstrip(".!?")
                                 self._lernprofil_hobbies = ob["answers"].get(6, "").strip()
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
                                     self._lernprofil_text = profile_text
+                                elif _profile == "tutor_basic":
+                                    # V2: erase onboarding context so GPT-4o literally
+                                    # cannot pattern-match on name/hobby/study — no active
+                                    # "forbidden" rules needed if the info is gone.
+                                    deleted = 0
+                                    for iid in self._onboarding_item_ids:
+                                        try:
+                                            await self.connection.conversation.item.delete(item_id=iid)
+                                            deleted += 1
+                                        except Exception as e:
+                                            logger.debug("Item delete %s failed: %s", iid, e)
+                                    logger.info("V2: deleted %d/%d onboarding items from context",
+                                                deleted, len(self._onboarding_item_ids))
                                     try:
                                         await self.connection.conversation.item.create(
                                             item={
@@ -671,31 +694,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "Die Bewegung markiert das Ende deiner Antwort."
                             )
                             if _profile == "tutor_basic":
-                                # V2 reminder — name put at TOP as explicit forbidden token.
-                                # General "no onboarding info" rule was too abstract: GPT-4o
-                                # still leaked the name ("Du machst das gut, Mike") because
-                                # it sat in history and pattern-matched as friendly.
-                                forbidden_name = (
-                                    f"\n🚫 ABSOLUTES VERBOT — NAME: Der Studierende heißt '{self._lernprofil_name}'. "
-                                    f"Verwende '{self._lernprofil_name}' NIEMALS in deiner Antwort. "
-                                    f"Keine Anrede ('Mike', 'Hi Mike', 'Du machst das gut, {self._lernprofil_name}'). "
-                                    f"Adressiere den Studierenden ausschließlich mit 'Du' — nie mit seinem Namen. "
-                                    if self._lernprofil_name else ""
-                                )
-                                forbidden_hobby = (
-                                    f"\n🚫 ABSOLUTES VERBOT — HOBBY/KONTEXT: Hobby/Interesse war '{self._lernprofil_hobbies}'. "
-                                    "Verwende es NICHT als Beispiel, Analogie oder Kontext. "
-                                    if self._lernprofil_hobbies else ""
-                                )
+                                # V2: onboarding items were deleted from context after Q7.
+                                # GPT-4o has no access to name/hobbies/etc. anymore, so no
+                                # active "forbidden" rules needed. Just a soft fallback in
+                                # case the student brings the name up themselves.
                                 tutoring_instructions = (
-                                    "=== V2 KONTROLLBEDINGUNG — HARTE REGELN ZUERST ===\n"
-                                    + forbidden_name
-                                    + forbidden_hobby
-                                    + "\n🚫 Erwähne KEINE Onboarding-Infos (Studium, Semester, Motivation, Lernstil, Lernziel, Wissensstand). "
-                                    "Keine implizite Anpassung von Beispielen/Ton an diese Angaben. "
-                                    "Wenn der Studierende fragt 'weißt du noch X?' — antworte: "
-                                    "'Nein, ich starte jede Session neu ohne Vorwissen.'\n\n"
-                                    + common_turn_rule
+                                    common_turn_rule + " "
+                                    "Du hast keine Vorinformationen über den Studierenden — "
+                                    "adressiere mit 'Du'. "
+                                    "Wenn der Studierende fragt 'weißt du noch X?' oder ähnlich, "
+                                    "antworte: 'Nein, ich starte jede Session neu ohne Vorwissen.'"
                                 )
                             elif _profile in V1_PROFILES:
                                 self._tutoring_turn_count += 1
