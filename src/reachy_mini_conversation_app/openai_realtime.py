@@ -556,6 +556,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._onboarding_q_pending = False
         self._movement_dispatched_this_response = False
         self._movement_blocked_until_user_input = False
+        self._tutoring_verbal_retry_fired = False  # watchdog ran once for this user turn
         self._q_lock_release_task: asyncio.Task | None = None
         self._lernprofil_text = ""
         self._lernprofil_name = ""
@@ -587,7 +588,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "turn_detection": {
                                     "type": "server_vad",
                                     "threshold": 0.85,
-                                    "silence_duration_ms": 2200,
+                                    "silence_duration_ms": 1000,
                                     "interrupt_response": True,
                                     "create_response": False,
                                 },
@@ -647,6 +648,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self.deps.head_wobbler.reset()
                     self.deps.movement_manager.set_listening(True)
                     self._movement_blocked_until_user_input = False
+                    self._tutoring_verbal_retry_fired = False
                     logger.debug("User speech started")
 
                 if event.type == "input_audio_buffer.speech_stopped":
@@ -683,9 +685,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self._onboarding["phase"],
                         self._onboarding["current_q"],
                     )
-                    # Guardrail: only for onboarding — re-ask the current Q if model produced no audio.
-                    # In tutoring phase we deliberately stay silent rather than auto-prompting,
-                    # because auto-prompts cause Reachy to "talk to himself" during user silence.
+                    # Guardrail: re-ask the current Q if model produced no audio.
+                    # During onboarding we re-ask. During tutoring, if a movement tool
+                    # was dispatched but no speech was produced (common failure mode —
+                    # model emits emotion alone as a silent reaction), issue a follow-up
+                    # response forcing a verbal reply. Only triggered when movement did
+                    # happen: a truly idle response.done without tools is left alone so
+                    # Reachy doesn't "talk to himself" during user silence.
                     if not self._response_audio_produced and not self._response_create_issued and self.connection:
                         _gp = self._onboarding["phase"]
                         _gq = self._onboarding["current_q"]
@@ -697,7 +703,30 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 await self._ask_onboarding_question(_gq)
                             except Exception as e:
                                 logger.warning("Onboarding guardrail failed: %s", e)
-                        # else: tutoring phase → stay silent, wait for user
+                        elif (
+                            _gp == "tutoring"
+                            and _gtutor
+                            and self._movement_dispatched_this_response
+                            and not self._tutoring_verbal_retry_fired
+                        ):
+                            logger.warning("Tutoring: movement without speech — forcing verbal follow-up")
+                            try:
+                                self._tutoring_verbal_retry_fired = True
+                                self._response_create_issued = True
+                                await self.connection.response.create(
+                                    response={
+                                        "instructions": (
+                                            "Die Bewegung allein reicht nicht. Reagiere jetzt auch SPRACHLICH "
+                                            "auf den letzten Beitrag des Studenten — mit Anerkennung, Scaffolding-Frage "
+                                            "oder der nächsten didaktischen Frage. KEINE weitere Bewegung in dieser Antwort. "
+                                            "Sprich kurz und klar (1–3 Sätze)."
+                                        ),
+                                        "tool_choice": "none",
+                                    }
+                                )
+                            except Exception as e:
+                                logger.warning("Tutoring verbal-follow-up failed: %s", e)
+                        # else: tutoring phase, no movement → stay silent, wait for user
                     self._response_audio_produced = False
                     self._response_create_issued = False
                     # Release single-flight lock: a Q response just finished.
@@ -845,12 +874,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 await self.connection.response.create(
                                     response={
                                         "instructions": (
-                                            "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese zwei Fragen — eine nach der anderen, in einer Antwort: "
+                                            "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese drei Fragen — "
+                                            "eine nach der anderen, in EINER Antwort, kurz und natürlich: "
                                             "1. 'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
                                             "2. 'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
-                                            "Stelle beide Fragen kurz und natürlich. Keine Prüfungs-Annahmen. Noch nicht lehren."
+                                            "3. 'Und wie möchten wir vorgehen — Folie-für-Folie durchgehen, zuerst einen Überblick, oder direkt mit Übungsfragen starten?' "
+                                            "Keine Prüfungs-Annahmen. Noch NICHT lehren. Keine Bewegungs-Tools in dieser Antwort. "
+                                            "Sprich vollständig und warte dann auf die Antwort des Studenten."
                                         ),
-                                        "tool_choice": "auto",
+                                        "tool_choice": "none",
                                     }
                                 )
                             else:
@@ -874,10 +906,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # Hint: speak first, then call movement tool — reduces move_head-only responses
                         if self.connection:
                             common_turn_rule = (
-                                "Antworte dem Studenten. Sprich zuerst deine vollständige Antwort aus, "
-                                "rufe DANACH genau EINE Bewegung (move_head oder play_emotion) auf — "
-                                "und beende danach deinen Turn. Sprich NICHTS mehr nach der Bewegung. "
-                                "Die Bewegung markiert das Ende deiner Antwort."
+                                "Antworte dem Studenten. JEDE Antwort MUSS gesprochene Sprache enthalten "
+                                "(mindestens ein vollständiger Satz, der inhaltlich auf den Beitrag des Studenten reagiert). "
+                                "Sprich zuerst deine vollständige Antwort aus. Eine Bewegung (move_head oder play_emotion) "
+                                "ist optional und NUR als Zusatz nach der Sprache erlaubt — NIEMALS als Ersatz. "
+                                "Bewegung ohne Sprache ist STRIKT VERBOTEN. "
+                                "Nach der Bewegung sprichst du nichts mehr — die Bewegung markiert das Ende deines Turns."
                             )
                             if _profile == "tutor_basic":
                                 # V2: onboarding items were deleted from context after Q7.
@@ -936,6 +970,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "KEINE ERFUNDENEN FAKTEN: Unsicher → 'Das weiß ich nicht sicher.'",
                                     "BEWEGUNG STUMM: Kommentiere Bewegung NIE verbal ('ich hebe den Kopf' ist VERBOTEN). Sprich Antwort → rufe eine Bewegung → Turn zu Ende.",
                                     "KEINE TOOL-ENTSCHULDIGUNGEN: Sag NIE 'Es gab ein Problem' / 'Entschuldige' / 'hat nicht funktioniert' / 'eine Funktion hat nicht reagiert'. Vorheriger Turn ist abgeschlossen. Beginne neue Antwort direkt mit Inhalt.",
+                                    "PACING-ADAPTION: Wenn der Student Deadline/Prüfung/Multiple-Choice erwähnt hat ODER sich als Einsteiger/Anfänger bezeichnet hat → KEINE tiefen Sokratik-Ketten. Maximal 1–2 Folge-Fragen pro Konzept. Liefere die Kernaussage klar, stelle eine kurze Verständnis-Frage, dann weiter zum nächsten Punkt. Tiefe nur auf expliziten Wunsch des Studenten.",
+                                    "NUTZER-STEUERUNG: Wenn der Student sagt, wie er vorgehen möchte (z.B. 'Folie-für-Folie', 'Überblick', 'oberflächlich', 'zusammenfassen') → FOLGE seiner Methode. Wechsle NIE eigenmächtig die Vorgehensweise. Sokratik nur innerhalb der gewählten Methode.",
+                                    "FOLIEN-FORTSCHRITT: Springe NIE zu einer neuen Folie, solange der Student die aktuelle nicht explizit abgeschlossen oder als verstanden markiert hat. Bei Unklarheit bleib bei der aktuellen Folie und frage einfacher.",
                                 ])
                                 profile_block = (
                                     f"\nLERNPROFIL (aktiv nutzen):\n{self._lernprofil_text}\n"
