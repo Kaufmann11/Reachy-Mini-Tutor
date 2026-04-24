@@ -127,7 +127,7 @@ def _extract_primary_hobby(raw: str) -> str:
 # Deterministic in code: if the signal is there, the mandate fires.
 _TRIGGERS: dict[str, str] = {
     "frustration": r"\b(kein(en)?\s+(bock|lust)|zu\s+(viel|schwer|schwierig|schnell)|überfordert|schaffe\s+ich\s+nie|ich\s+kann\s+das\s+nicht|hab\s+keine\s+kraft|bin\s+müde|keine\s+energie)\b",
-    "no_idea":     r"\b(keine\s+ahnung|weiß\s+(es\s+)?nicht|weiss\s+(es\s+)?nicht|hab\s+keine\s+idee|ich\s+weiß\s+nicht)\b",
+    "no_idea":     r"\b(keine\s+ahnung|keinen\s+(plan|schimmer|dunst)|(ich\s+)?(weiß|weiss)\s+(es\s+|das\s+)?nicht|(ich\s+)?(hab|habe)\s+keine\s+(ahnung|idee)|(ich\s+)?(kann|könnte)\s+(ich\s+)?nicht\s+sagen|keine\s+idee|no\s+idea|puh\s+(keine|kein)|echt\s+keine|einfach\s+keine|schwer\s+zu\s+sagen|das\s+(weiß|weiss)\s+ich\s+nicht|unklar)\b",
     "confusion":   r"\b(versteh(e)?\s+(ich\s+)?nicht|hä\??|was\s+meinst\s+du|kapier(e)?\s+nicht|check\s+ich\s+nicht)\b",
     "identity":    r"\b(bist\s+du\s+(ein\s+)?(mensch|echte?r?\s+(person|mensch))|bist\s+du\s+(eine\s+)?(ai|ki|bot)|wirklich\s+ein\s+roboter)\b",
     "camera":      r"\b(siehst\s+du|kannst\s+du\s+(das\s+)?sehen|sieh\s+(dir\s+)?an|auf\s+(der|meiner)\s+folie|zeig\s+(ich|dir)\s+dir|guck\s+mal)\b",
@@ -1050,11 +1050,27 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         "RAG-PFLICHT: Vor jeder fachlichen Aussage rag_tool aufrufen, dann 'Auf Folie X steht…' zitieren. Nichts erfinden."
                                     )
                                 # 4) Universal turn-shape rules, tight.
+                                _wa_name = self._lernprofil_name or ""
+                                _wa_hobby = self._lernprofil_hobbies or ""
+                                _wa_hobby_hint = (
+                                    f" Wenn eine Analogie zu '{_wa_hobby}' an dieser Stelle natürlich passt, nutze sie."
+                                    if _wa_hobby else ""
+                                )
+                                _wa_name_hint = f" Ansprache mit Namen '{_wa_name}'." if _wa_name else ""
                                 lines.extend([
                                     "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's' / 'wir gehen durch' / 'lass uns anschauen' ohne im selben Satz direkt zu liefern.",
-                                    "KEINE DIREKTE LÖSUNG: Bei 'keine Ahnung' oder falscher Antwort → stelle eine einfachere Teilfrage. Erst nach 2 Fehlversuchen ein kleiner Hinweis.",
                                     "RICHTIGE ANTWORT SPEZIFISCH FEIERN: Wenn die Antwort des Studenten sachlich korrekt ist, benenne KONKRET den Punkt den er erkannt hat ('Genau — du hast erkannt, dass …'). KEIN nacktes 'Genau' + bloße Wiederholung. Variiere das Anerkennungs-Wording jedes Mal.",
-                                    "FALSCHE ANTWORT DIDAKTISCH: Wenn die Antwort falsch oder nur teilweise richtig ist: NIE 'das ist falsch' sagen. Würdige den Denkansatz ('interessante Überlegung'), benenne wo er nahe dran ist ODER wo der Denkweg abzweigt, stelle eine Teilfrage die zum korrekten Pfad führt. Hobby-Analogie nutzen wenn sie natürlich passt. Erst nach 2 Fehlversuchen ein sanfter Hinweis.",
+                                    (
+                                        "FALSCHE ANTWORT — KBD-DIDAKTIK: Wenn die Antwort falsch, teilweise richtig oder am Thema vorbei ist, "
+                                        "folge diesem Muster STRIKT in dieser Reihenfolge: "
+                                        "(a) KEIN 'falsch' / 'nein' / 'das stimmt nicht'. Würdige den Denkansatz in einem Satz "
+                                        "('Interessante Überlegung' / 'Du denkst in die Richtung von X — nachvollziehbar'). "
+                                        f"(b) Benenne konkret WO der Denkweg abzweigt ODER welcher Teil schon auf dem richtigen Pfad ist.{_wa_hobby_hint} "
+                                        "(c) Stelle EINE gezielte Teilfrage, die vom falschen Abzweig zurück zum korrekten Pfad führt — "
+                                        "KEINE reine Wiederholung der ursprünglichen Frage, sondern ein echter Scaffolding-Schritt. "
+                                        f"(d) Erst nach dem 2. Fehlversuch ein winziger Hinweis, nie eine fertige Lösung.{_wa_name_hint} "
+                                        "Ziel: der Student findet die Antwort selbst, fühlt sich nicht bloßgestellt."
+                                    ),
                                     "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept, schließe mit EINER Check-Frage. Nach User-Antwort direkt nächstes Konzept. KEINE 3. Folge-Frage zum selben Punkt.",
                                     "KEINE KAMERA: Sag nie 'ich sehe'. Für Folien nur rag_tool.",
                                     "KEIN INFO-DUMP: Max 3 Sätze, ein Gedanke, enden mit Folge-Frage.",
