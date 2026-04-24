@@ -398,6 +398,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # queues calls while a response is active and drains on response.done.
         self._response_active: bool = False
         self._pending_response_creates: list[tuple[dict, str]] = []
+        # Dedup set for transcript events (SDK fires legacy + GA alias for same response).
+        self._seen_transcript_keys: set[tuple] = set()
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -734,6 +736,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._mc_flag = False
         self._response_active = False
         self._pending_response_creates = []
+        self._seen_transcript_keys = set()
         conv = ConversationManager("student_001")
         user_id = "student_001"
         # Tracks the most recent user transcript across iterations of the event loop.
@@ -1076,10 +1079,23 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # Stage 1 of post-onboarding: Deadline + Wissensstand only.
                                 # Method question is asked AFTER student answers these two, so it
                                 # cannot be buried in a long 3-question reply and skipped.
+                                # V2 (tutor_basic) also asks this — it's context-gathering, not
+                                # personalization — but must not leak the name/hobbies into the
+                                # Stage-1 opener because the general tutoring_instructions with
+                                # ANTI-LEAK only apply to later turns, not this one.
+                                _stage1_antileak = (
+                                    "KEIN Name, KEINE Hobby-Rückbezüge, KEINE Bezugnahme "
+                                    "auf das Onboarding ('wie du gesagt hast' etc.). Beginne "
+                                    "direkt mit den zwei Fragen. Sprich den Studierenden "
+                                    "höchstens mit 'Du' an. "
+                                    if _profile == "tutor_basic" else ""
+                                )
                                 await self._safe_response_create(
                                     response={
                                         "instructions": (
-                                            "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese zwei Fragen — "
+                                            "Das Onboarding ist abgeschlossen. "
+                                            + _stage1_antileak +
+                                            "Stelle jetzt GENAU diese zwei Fragen — "
                                             "eine nach der anderen, in EINER Antwort, kurz und natürlich: "
                                             "1. 'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
                                             "2. 'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
@@ -1210,8 +1226,18 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's', 'lass uns starten', "
                                     "'dann legen wir los' ohne im selben Turn direkt den ersten Inhalt "
                                     "zu liefern. "
-                                    "NEUTRALER TON: Keine didaktischen Lob-Floskeln wie 'gut gemacht', "
-                                    "'kein Problem', 'du machst das gut', 'du hast das super erkannt'. "
+                                    "NEUTRALER TON (HARTE BLACKLIST): Die folgenden Phrasen sind "
+                                    "STRIKT VERBOTEN — niemals benutzen, auch nicht sinngemäß: "
+                                    "'Super', 'Klasse', 'Toll', 'Prima', 'gut gemacht', 'kein Problem', "
+                                    "'du machst das gut', 'du hast das super erkannt', 'guter Start', "
+                                    "'interessante Überlegung', 'spannende Frage'. "
+                                    "KEINE SOKRATIK: Die folgenden Sokratik-Einleitungen sind ebenfalls "
+                                    "STRIKT VERBOTEN: 'erkläre mir in deinen eigenen Worten', "
+                                    "'was denkst du darüber', 'stell dir vor', 'was glaubst du', "
+                                    "'überlege mal'. Du stellst keine Scaffolding-Fragen zurück an den "
+                                    "Studierenden. Wenn er nach einer Erklärung fragt, erklärst du "
+                                    "direkt. Wenn er etwas falsch sagt, korrigierst du sachlich: "
+                                    "'Nein, korrekt ist X.' — ohne Aufmunterung. "
                                     "Bleib sachlich wie eine generische KI-Suchantwort. Bestätigungen "
                                     "höchstens mit 'Richtig.' / 'Das stimmt.' ohne Ermutigung."
                                 )
@@ -1386,8 +1412,26 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 label=f"tutoring_turn_{self._tutoring_turn_count}",
                             )
 
-                # Handle assistant transcription
+                # Handle assistant transcription. Some SDK versions fire BOTH
+                # response.audio_transcript.done (legacy) AND
+                # response.output_audio_transcript.done (GA alias) for the same
+                # response — that duplicated every bot utterance in the log and
+                # UI. Dedupe by response_id + item_id.
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
+                    _rid = getattr(event, "response_id", None)
+                    _iid = getattr(event, "item_id", None)
+                    _dedup_key = (_rid, _iid)
+                    if _dedup_key in self._seen_transcript_keys:
+                        logger.debug("Skipping duplicate transcript event %s", _dedup_key)
+                        continue
+                    self._seen_transcript_keys.add(_dedup_key)
+                    # Prune to a small cap so the set doesn't grow unbounded.
+                    if len(self._seen_transcript_keys) > 256:
+                        # Keep the most recent 128 by dropping to a fresh set.
+                        # Order of a set is insertion in CPython 3.7+ for dicts,
+                        # but not guaranteed for sets — use a list slice instead.
+                        keys_list = list(self._seen_transcript_keys)
+                        self._seen_transcript_keys = set(keys_list[-128:])
                     logger.debug(f"Assistant transcript: {event.transcript}")
                     # Track name usage cadence so we can inject reminders when name is stale
                     if self._lernprofil_name and self._onboarding["phase"] == "tutoring":
