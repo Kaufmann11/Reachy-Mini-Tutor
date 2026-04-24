@@ -133,6 +133,7 @@ _TRIGGERS: dict[str, str] = {
     "camera":      r"\b(siehst\s+du|kannst\s+du\s+(das\s+)?sehen|sieh\s+(dir\s+)?an|auf\s+(der|meiner)\s+folie|zeig\s+(ich|dir)\s+dir|guck\s+mal)\b",
     "content_q":   r"\b(erkläre?\s+mir|was\s+(ist|bedeutet|heißt)|wie\s+funktioniert|definier(e)?|erklär\s+mir)\b",
     "exam":        r"\b(klausur|prüfung|hausaufgabe|aufgabe\s+lösen|lösung\s+der\s+aufgabe|musterlösung)\b",
+    "depth_req":   r"\b(oberflächlich|zu\s+wenig|zu\s+kurz|tiefer|mehr\s+details|ausführlicher|genauer\s+erklär|verstehe\s+immer\s+noch\s+nicht|war\s+zu\s+schnell)\b",
 }
 
 
@@ -140,6 +141,7 @@ def _build_reactive_mandates(
     user_text: str,
     profile_data: dict,
     name: str,
+    hobby: str = "",
 ) -> tuple[list[str], list[str]]:
     """Detect reactive signals in the user's last turn and build mandatory instructions.
 
@@ -176,10 +178,14 @@ def _build_reactive_mandates(
         )
 
     if "no_idea" in fired:
+        hobby_hint = f" Wenn eine Analogie zu '{hobby}' natürlich passt, nutze sie." if hobby else ""
+        name_prefix = f"{name}, " if name else ""
         mandates.append(
-            "REAKTIV — UNSICHERHEIT: Der Student sagt, er weiß es nicht. "
-            "KEINE Lösung geben. Stelle EINE einfachere Teilfrage, die einen konkreten Schritt zurückgeht "
-            "oder eine Alltags-Analogie anbietet. Erst nach dem 2. Fehlversuch ein winziger Hinweis."
+            f"REAKTIV — UNSICHERHEIT: Beginne mit KURZER empathischer Anerkennung mit Namen "
+            f"(z.B. '{name_prefix}kein Stress — lass uns das zusammen knacken'). "
+            f"KEINE direkte Lösung. Stelle dann EINE DEUTLICH einfachere Teilfrage — "
+            f"nicht dieselbe Frage anders formuliert, sondern einen echten Schritt zurück.{hobby_hint} "
+            f"Erst nach dem 2. Fehlversuch ein winziger Hinweis."
         )
 
     if "confusion" in fired:
@@ -212,6 +218,15 @@ def _build_reactive_mandates(
         mandates.append(
             "REAKTIV — PRÜFUNG/AUFGABE: KEINE komplette Lösung oder Musterantwort geben. "
             "Führe durch den Denkweg mit Fragen. Der Student muss selbst drauf kommen."
+        )
+
+    if "depth_req" in fired:
+        mandates.append(
+            "REAKTIV — TIEFE GEWÜNSCHT: Der Student hat explizit mehr Tiefe verlangt. "
+            "Liefere JETZT eine ausführliche Erklärung in 3–4 Sätzen mit konkreten Details und Fachbegriffen, "
+            "DANN ein konkretes, spezifisches Beispiel (nicht generisch), "
+            "DANN EINE Check-Frage. KEINE weitere Sokratik-Kette an dieser Stelle — "
+            "erst Verstehen herstellen, dann wieder fragen."
         )
 
     return mandates, fired
@@ -295,6 +310,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._lernprofil_text: str = ""  # Cached LERNPROFIL for per-turn V1 re-injection
         self._lernprofil_name: str = ""  # Extracted student name from Q1
         self._lernprofil_hobbies: str = ""  # Extracted hobbies/interests from Q6
+        self._humor_welcomed: bool = False  # Parsed from Q6 — drives periodic humor mandate
+        self._chosen_method: str = ""  # Post-onboarding learning approach (slide/overview/exercise)
+        self._post_onboarding_stage: str = ""  # "" | "need_context" | "need_method" | "done"
         self._tutoring_turn_count: int = 0  # Bot tutoring turns since onboarding
         self._last_name_used_turn: int = -99  # Turn index when name was last spoken
         self._document_uploaded: bool = False  # True once student uploaded any doc
@@ -561,6 +579,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._lernprofil_text = ""
         self._lernprofil_name = ""
         self._lernprofil_hobbies = ""
+        self._humor_welcomed = False
+        self._chosen_method = ""
+        self._post_onboarding_stage = ""
         self._tutoring_turn_count = 0
         self._last_name_used_turn = -99
         self._document_uploaded = False
@@ -845,8 +866,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # All 7 questions answered
                                 self._lernprofil_name = _extract_name(ob["answers"].get(1, ""))
                                 self._lernprofil_hobbies = _extract_primary_hobby(ob["answers"].get(6, ""))
-                                logger.info("Extracted name=%r hobby=%r",
-                                            self._lernprofil_name, self._lernprofil_hobbies)
+                                _q6_lower = (ob["answers"].get(6, "") or "").lower()
+                                self._humor_welcomed = any(
+                                    kw in _q6_lower
+                                    for kw in ("humor", "lustig", "witz", "locker", "gerne humor", "darf humor", "darf auch humor")
+                                ) and not any(
+                                    neg in _q6_lower for neg in ("kein humor", "ohne humor", "lieber sachlich", "nur sachlich")
+                                )
+                                logger.info("Extracted name=%r hobby=%r humor_welcomed=%s",
+                                            self._lernprofil_name, self._lernprofil_hobbies, self._humor_welcomed)
                                 if _profile in V1_PROFILES and not ob["profile_injected"]:
                                     profile_text = _build_lernprofil(ob["answers"])
                                     self._lernprofil_text = profile_text
@@ -867,18 +895,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                                 deleted, len(self._onboarding_item_ids))
 
                                 ob["phase"] = "tutoring"
+                                self._post_onboarding_stage = "need_method"  # after context answer, ask method
                                 logger.info("Onboarding complete → tutoring (profile=%s)", _profile)
 
-                                # Same post-onboarding follow-ups for V1 and V2 (identical introduction).
-                                # V1 uses the answers via LERNPROFIL + KBD; V2 hears them but must not reference them later.
+                                # Stage 1 of post-onboarding: Deadline + Wissensstand only.
+                                # Method question is asked AFTER student answers these two, so it
+                                # cannot be buried in a long 3-question reply and skipped.
                                 await self.connection.response.create(
                                     response={
                                         "instructions": (
-                                            "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese drei Fragen — "
+                                            "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese zwei Fragen — "
                                             "eine nach der anderen, in EINER Antwort, kurz und natürlich: "
                                             "1. 'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
                                             "2. 'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
-                                            "3. 'Und wie möchten wir vorgehen — Folie-für-Folie durchgehen, zuerst einen Überblick, oder direkt mit Übungsfragen starten?' "
                                             "Keine Prüfungs-Annahmen. Noch NICHT lehren. Keine Bewegungs-Tools in dieser Antwort. "
                                             "Sprich vollständig und warte dann auf die Antwort des Studenten."
                                         ),
@@ -903,6 +932,50 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             if not _is_valid_onboarding_answer(text, 0):
                                 logger.info("Tutoring phantom-filtered transcript %r — not responding", text)
                                 continue
+
+                        # Post-onboarding staging (V1 only — V2 is generic and doesn't need
+                        # a chosen method since it shouldn't tailor its approach anyway).
+                        # Stage 1 answer received → ask method question. Stage 2 answer → capture method.
+                        if (
+                            _profile in V1_PROFILES
+                            and ob["phase"] == "tutoring"
+                            and self._post_onboarding_stage == "need_method"
+                            and self.connection
+                        ):
+                            self._post_onboarding_stage = "awaiting_method_answer"
+                            await self.connection.response.create(
+                                response={
+                                    "instructions": (
+                                        "Kurze Anerkennung der Antworten (1 Satz, mit Namen). "
+                                        "DANN stelle GENAU diese Frage: "
+                                        "'Wie möchten wir vorgehen — Folie-für-Folie durchgehen, zuerst einen Überblick über die Inhalte, "
+                                        "oder direkt mit Übungsfragen starten?' "
+                                        "Keine Bewegungs-Tools. Noch NICHT lehren. Warte auf die Antwort."
+                                    ),
+                                    "tool_choice": "none",
+                                }
+                            )
+                            continue
+                        if (
+                            _profile in V1_PROFILES
+                            and ob["phase"] == "tutoring"
+                            and self._post_onboarding_stage == "awaiting_method_answer"
+                        ):
+                            # Capture chosen method from user's answer.
+                            raw_method = (event.transcript or "").lower()
+                            if any(k in raw_method for k in ("folie", "einzeln", "schritt", "nacheinander", "eine nach")):
+                                self._chosen_method = "Folie-für-Folie"
+                            elif any(k in raw_method for k in ("überblick", "uberblick", "übersicht", "ueberblick", "grob", "zusammenfassung")):
+                                self._chosen_method = "Überblick zuerst"
+                            elif any(k in raw_method for k in ("übung", "uebung", "fragen", "quiz", "test", "multiple")):
+                                self._chosen_method = "Übungsfragen"
+                            else:
+                                self._chosen_method = "Folie-für-Folie"  # sensible default
+                            logger.info("Captured chosen method: %r (from %r)", self._chosen_method, raw_method[:80])
+                            self._post_onboarding_stage = "done"
+                            # Fall through to normal tutoring response — the mandate below
+                            # will inject the chosen method into every per-turn prompt.
+
                         # Hint: speak first, then call movement tool — reduces move_head-only responses
                         if self.connection:
                             common_turn_rule = (
@@ -937,6 +1010,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     last_user_text,
                                     self._onboarding.get("answers", {}),
                                     self._lernprofil_name,
+                                    self._lernprofil_hobbies,
                                 )
                                 if fired_triggers:
                                     logger.info(
@@ -956,6 +1030,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     lines.append(
                                         f"HOBBY-BRÜCKE: Wenn eine natürliche Analogie zu '{self._lernprofil_hobbies}' passt, nutze sie jetzt — nicht erzwingen."
                                     )
+                                # 2b) HUMOR — every 3rd turn when student welcomed humor.
+                                if self._humor_welcomed and self._tutoring_turn_count % 3 == 0:
+                                    lines.append(
+                                        "HUMOR-NOTE: Der Student hat Humor explizit begrüßt. Bring jetzt einen natürlichen "
+                                        "leichten Touch — ein augenzwinkernder Vergleich, eine kleine freundliche Pointe. "
+                                        "Nicht albern, nicht flach, nicht krampfhaft. Humor darf die Didaktik nie verdrängen."
+                                    )
+                                # 2c) CHOSEN METHOD — inject the student's chosen learning approach.
+                                if self._chosen_method:
+                                    lines.append(
+                                        f"GEWÄHLTE METHODE: '{self._chosen_method}'. Halte dich strikt daran. "
+                                        f"Kein eigenmächtiger Wechsel der Vorgehensweise. Nur wenn der Student selbst "
+                                        f"eine andere Methode wünscht, wechselst du."
+                                    )
                                 # 3) RAG — only when doc uploaded.
                                 if self._document_uploaded:
                                     lines.append(
@@ -965,6 +1053,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 lines.extend([
                                     "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's' / 'wir gehen durch' / 'lass uns anschauen' ohne im selben Satz direkt zu liefern.",
                                     "KEINE DIREKTE LÖSUNG: Bei 'keine Ahnung' oder falscher Antwort → stelle eine einfachere Teilfrage. Erst nach 2 Fehlversuchen ein kleiner Hinweis.",
+                                    "RICHTIGE ANTWORT SPEZIFISCH FEIERN: Wenn die Antwort des Studenten sachlich korrekt ist, benenne KONKRET den Punkt den er erkannt hat ('Genau — du hast erkannt, dass …'). KEIN nacktes 'Genau' + bloße Wiederholung. Variiere das Anerkennungs-Wording jedes Mal.",
+                                    "FALSCHE ANTWORT DIDAKTISCH: Wenn die Antwort falsch oder nur teilweise richtig ist: NIE 'das ist falsch' sagen. Würdige den Denkansatz ('interessante Überlegung'), benenne wo er nahe dran ist ODER wo der Denkweg abzweigt, stelle eine Teilfrage die zum korrekten Pfad führt. Hobby-Analogie nutzen wenn sie natürlich passt. Erst nach 2 Fehlversuchen ein sanfter Hinweis.",
+                                    "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept, schließe mit EINER Check-Frage. Nach User-Antwort direkt nächstes Konzept. KEINE 3. Folge-Frage zum selben Punkt.",
                                     "KEINE KAMERA: Sag nie 'ich sehe'. Für Folien nur rag_tool.",
                                     "KEIN INFO-DUMP: Max 3 Sätze, ein Gedanke, enden mit Folge-Frage.",
                                     "KEINE ERFUNDENEN FAKTEN: Unsicher → 'Das weiß ich nicht sicher.'",
