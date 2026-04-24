@@ -387,6 +387,17 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._einsteiger_flag: bool = False  # student described self as Einsteiger/beginner
         self._deadline_flag: bool = False    # student mentioned deadline/Prüfung/MC
         self._mc_flag: bool = False          # multiple-choice specifically
+        # --- Single-flight guard for response.create ---
+        # The Realtime API serializes responses; a second response.create while one
+        # is still active is rejected with conversation_already_has_active_response.
+        # We see this race in production between Stage-1/Stage-2 post-onboarding
+        # prompts, the verbal-retry watchdog, and tool-follow-up calls. Instructions
+        # bundled on the rejected call never reach the model — that is the root
+        # cause of "no deadline question", "no reaction to keine Ahnung", etc.
+        # Solution: route every response.create through _safe_response_create, which
+        # queues calls while a response is active and drains on response.done.
+        self._response_active: bool = False
+        self._pending_response_creates: list[tuple[dict, str]] = []
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -558,6 +569,65 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         except Exception as e:
             logger.warning("_restart_session failed: %s", e)
 
+    async def _safe_response_create(
+        self, response: Optional[dict] = None, label: str = ""
+    ) -> bool:
+        """Single-flight wrapper around connection.response.create.
+
+        The Realtime API serializes responses: a second response.create while
+        one is still active is rejected with conversation_already_has_active_response,
+        and any instructions on the rejected call never reach the model. We
+        queue subsequent calls and drain them on response.done.
+
+        Returns True if the call was issued immediately, False if it was queued
+        (or dropped because there is no connection).
+        """
+        if not self.connection:
+            return False
+        payload: dict = {"response": response if response is not None else {}}
+        if self._response_active:
+            self._pending_response_creates.append((payload, label))
+            logger.info(
+                "Queued response.create (label=%s, queue_depth=%d)",
+                label or "-", len(self._pending_response_creates),
+            )
+            return False
+        # Mark active optimistically; response.created will re-confirm, and if the
+        # API rejects the call we roll back below so the queue isn't stuck.
+        self._response_active = True
+        try:
+            await self.connection.response.create(**payload)
+            if label:
+                logger.debug("Issued response.create (label=%s)", label)
+            return True
+        except Exception as e:
+            self._response_active = False
+            logger.warning("response.create failed (label=%s): %s", label or "-", e)
+            # Drain next queued entry so one failure doesn't freeze the queue.
+            await self._drain_pending_responses()
+            return False
+
+    async def _drain_pending_responses(self) -> None:
+        """Fire the next queued response.create, if any. Called on response.done."""
+        if self._response_active or not self._pending_response_creates:
+            return
+        if not self.connection:
+            self._pending_response_creates.clear()
+            return
+        payload, label = self._pending_response_creates.pop(0)
+        self._response_active = True
+        try:
+            await self.connection.response.create(**payload)
+            logger.info(
+                "Drained queued response.create (label=%s, remaining=%d)",
+                label or "-", len(self._pending_response_creates),
+            )
+        except Exception as e:
+            self._response_active = False
+            logger.warning("Queued response.create failed (label=%s): %s", label or "-", e)
+            # Try the next one so a single failure doesn't block the queue.
+            await self._drain_pending_responses()
+
     async def _ask_onboarding_question(self, q_num: int, reask: bool = False) -> None:
         """Trigger a regular response that asks onboarding question q_num verbatim.
 
@@ -619,11 +689,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 self._q_lock_release_task.cancel()
             self._response_create_issued = True
             self._onboarding_q_pending = True
-            await self.connection.response.create(
+            await self._safe_response_create(
                 response={
                     "instructions": instructions,
                     "tool_choice": "auto",
-                }
+                },
+                label=f"onboarding_q{q_num}{'_reask' if reask else ''}",
             )
             logger.info("Asked onboarding Q%d (reask=%s)", q_num, reask)
         except Exception as e:
@@ -661,6 +732,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._einsteiger_flag = False
         self._deadline_flag = False
         self._mc_flag = False
+        self._response_active = False
+        self._pending_response_creates = []
         conv = ConversationManager("student_001")
         user_id = "student_001"
         # Tracks the most recent user transcript across iterations of the event loop.
@@ -721,10 +794,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             # Tutor profiles wait for the user to speak first (current_q==0).
             # Non-tutor profiles get an immediate greeting.
             if not _is_tutor_profile:
+                # Initial session greeting — no prior response could be active,
+                # so skip the safe-guard wrapper. Set the flag directly; it will
+                # be cleared on the first response.done.
                 try:
+                    self._response_active = True
                     await conn.response.create(response={})
                     logger.info("Triggered initial greeting for non-tutor profile=%s", _cur_profile)
                 except Exception as e:
+                    self._response_active = False
                     logger.warning("Initial response.create failed: %s", e)
             else:
                 logger.info("Waiting for user to initiate conversation (profile=%s)", _cur_profile)
@@ -762,6 +840,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if event.type == "response.created":
                     logger.debug("Response created")
                     self._movement_dispatched_this_response = False
+                    self._response_active = True
 
                 # Track conversation items during onboarding so we can delete them
                 # for V2 (tutor_basic) once onboarding ends — that literally removes
@@ -788,6 +867,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self._onboarding["phase"],
                         self._onboarding["current_q"],
                     )
+                    # Clear single-flight flag first so the watchdog below (and any
+                    # queued responses) can actually issue a new response.create.
+                    self._response_active = False
                     # Guardrail: re-ask the current Q if model produced no audio.
                     # During onboarding we re-ask. During tutoring, if a movement tool
                     # was dispatched but no speech was produced (common failure mode —
@@ -816,7 +898,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             try:
                                 self._tutoring_verbal_retry_fired = True
                                 self._response_create_issued = True
-                                await self.connection.response.create(
+                                await self._safe_response_create(
                                     response={
                                         "instructions": (
                                             "Die Bewegung allein reicht nicht. Reagiere jetzt auch SPRACHLICH "
@@ -825,7 +907,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                             "Sprich kurz und klar (1–3 Sätze)."
                                         ),
                                         "tool_choice": "none",
-                                    }
+                                    },
+                                    label="watchdog_verbal_retry",
                                 )
                             except Exception as e:
                                 logger.warning("Tutoring verbal-follow-up failed: %s", e)
@@ -856,6 +939,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         self._q_lock_release_task = asyncio.create_task(_release_q_lock_delayed())
                     else:
                         self._onboarding_q_pending = False
+                    # Drain any response.create calls that were queued while this
+                    # response was active (post-onboarding Stage-1/Stage-2, etc.).
+                    await self._drain_pending_responses()
 
                 # Handle partial transcription (user speaking in real-time)
                 if event.type == "conversation.item.input_audio_transcription.partial":
@@ -990,7 +1076,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # Stage 1 of post-onboarding: Deadline + Wissensstand only.
                                 # Method question is asked AFTER student answers these two, so it
                                 # cannot be buried in a long 3-question reply and skipped.
-                                await self.connection.response.create(
+                                await self._safe_response_create(
                                     response={
                                         "instructions": (
                                             "Das Onboarding ist abgeschlossen. Stelle jetzt GENAU diese zwei Fragen — "
@@ -1001,7 +1087,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                             "Sprich vollständig und warte dann auf die Antwort des Studenten."
                                         ),
                                         "tool_choice": "none",
-                                    }
+                                    },
+                                    label="post_onboarding_stage1",
                                 )
                             else:
                                 # Ask next question — model will briefly acknowledge the answer first
@@ -1052,7 +1139,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 self._einsteiger_flag, self._deadline_flag, self._mc_flag, _ctx_lower[:100],
                             )
                             self._post_onboarding_stage = "awaiting_method_answer"
-                            await self.connection.response.create(
+                            await self._safe_response_create(
                                 response={
                                     "instructions": (
                                         "Kurze Anerkennung der Antworten (1 Satz, mit Namen). "
@@ -1062,7 +1149,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         "Keine Bewegungs-Tools. Noch NICHT lehren. Warte auf die Antwort."
                                     ),
                                     "tool_choice": "none",
-                                }
+                                },
+                                label="post_onboarding_stage2_method",
                             )
                             continue
                         if (
@@ -1293,8 +1381,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 )
                             else:
                                 tutoring_instructions = common_turn_rule
-                            await self.connection.response.create(
-                                response={"instructions": tutoring_instructions, "tool_choice": "auto"}
+                            await self._safe_response_create(
+                                response={"instructions": tutoring_instructions, "tool_choice": "auto"},
+                                label=f"tutoring_turn_{self._tutoring_turn_count}",
                             )
 
                 # Handle assistant transcription
@@ -1463,11 +1552,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         pass
                     else:
                         self._response_create_issued = True
-                        await self.connection.response.create(
+                        await self._safe_response_create(
                             response={
                                 "instructions": "Use the tool result just returned and answer concisely in speech.",
                                 "tool_choice": "auto",
                             },
+                            label=f"tool_followup_{tool_name}",
                         )
 
                     # re synchronize the head wobble after a tool call that may have taken some time
@@ -1481,6 +1571,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     code = getattr(err, "code", "")
 
                     logger.error("Realtime error [%s]: %s (raw=%s)", code, msg, err)
+
+                    # If the server says a response is already active but our flag
+                    # is False, the two are drifting. Trust the server: keep the
+                    # flag True so the next response.done re-syncs us. No drain.
+                    # For other errors we don't assume anything about flag state.
+                    if code == "conversation_already_has_active_response":
+                        self._response_active = True
 
                     # Only show user-facing errors, not internal state errors
                     if code not in ("input_audio_buffer_commit_empty", "conversation_already_has_active_response"):
@@ -1664,11 +1761,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 "content": [{"type": "input_text", "text": timestamp_msg}],
             },
         )
-        await self.connection.response.create(
+        await self._safe_response_create(
             response={
                 "instructions": "Call play_emotion with a valid emotion name, or call move_head with a direction (left/right/up/down/front). Do not invent new tool names. No speech.",
                 "tool_choice": "required",
             },
+            label="idle_signal",
         )
 
     def _persist_api_key_if_needed(self) -> None:
