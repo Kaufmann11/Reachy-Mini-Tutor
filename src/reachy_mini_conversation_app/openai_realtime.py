@@ -69,26 +69,49 @@ def _extract_name(raw: str) -> str:
       'Ich heiße Mike' → 'Mike'
       'Mike.' → 'Mike'
       'Ich bin Anna-Lena' → 'Anna-Lena'
+      'Mein Name Mike' → 'Mike'  (even without 'ist')
+      'Also ich heiße Mike' → 'Mike'
     """
     import re
     cleaned = raw.strip().rstrip(".!?,;: ")
-    # Remove common German self-introduction prefixes
+    # Remove common German self-introduction prefixes (robust: "ist" optional, tolerate fillers).
     patterns = [
-        r"^mein\s+name\s+ist\s+",
-        r"^ich\s+heiße\s+",
+        r"^(also|ja|hallo|hi|hey)[\s,]+",
+        r"^mein(e)?\s+nam(e)?(\s+ist)?\s+",
+        r"^ich\s+heiß?e\s+",
         r"^ich\s+heisse\s+",
-        r"^ich\s+bin\s+",
-        r"^mein\s+nam(e)?\s+ist\s+",
-        r"^das\s+bin\s+",
+        r"^ich\s+bin\s+(der\s+|die\s+)?",
+        r"^das\s+bin\s+(der\s+|die\s+)?",
         r"^ich\s+nenne\s+mich\s+",
+        r"^name\s*[:\-]?\s*",
     ]
-    for p in patterns:
-        cleaned = re.sub(p, "", cleaned, flags=re.IGNORECASE)
-    # Take first token (names can include hyphens, keep those)
+    # Apply repeatedly in case multiple stacked prefixes (e.g. "Also mein Name ist")
+    for _ in range(3):
+        before = cleaned
+        for p in patterns:
+            cleaned = re.sub(p, "", cleaned, flags=re.IGNORECASE)
+        if cleaned == before:
+            break
+    # Blacklist of German filler / pronoun / article / determiner tokens that must
+    # never be returned as a name. Guards against transcript glitches like
+    # "Mein Name Mike" where a prefix couldn't be stripped, or the user adding
+    # stray filler words before their name.
+    _NAME_STOPWORDS = {
+        "mein", "meine", "name", "ist", "ich", "bin", "heiße", "heisse",
+        "der", "die", "das", "ein", "eine", "hallo", "hi", "hey",
+        "also", "ja", "äh", "ähm", "hm", "halt", "einfach", "nun",
+        "nenne", "mich", "bin's", "bins",
+    }
     tokens = cleaned.split()
-    if not tokens:
-        return ""
-    return tokens[0].rstrip(".!?,;:")
+    # Step past any stopword tokens that survived prefix-stripping
+    for tok in tokens:
+        clean_tok = tok.rstrip(".!?,;:").strip()
+        if not clean_tok:
+            continue
+        if clean_tok.lower() in _NAME_STOPWORDS:
+            continue
+        return clean_tok
+    return ""
 
 
 def _extract_primary_hobby(raw: str) -> str:
@@ -1025,18 +1048,40 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     lines.append(
                                         f"NAME JETZT NUTZEN: Sprich '{self._lernprofil_name}' in dieser Antwort genau einmal direkt an."
                                     )
-                                # 2) HOBBY — only on chosen turns.
-                                if self._lernprofil_hobbies and self._tutoring_turn_count in (2, 5, 9):
-                                    lines.append(
-                                        f"HOBBY-BRÜCKE: Wenn eine natürliche Analogie zu '{self._lernprofil_hobbies}' passt, nutze sie jetzt — nicht erzwingen."
-                                    )
-                                # 2b) HUMOR — every 3rd turn when student welcomed humor.
-                                if self._humor_welcomed and self._tutoring_turn_count % 3 == 0:
-                                    lines.append(
-                                        "HUMOR-NOTE: Der Student hat Humor explizit begrüßt. Bring jetzt einen natürlichen "
-                                        "leichten Touch — ein augenzwinkernder Vergleich, eine kleine freundliche Pointe. "
-                                        "Nicht albern, nicht flach, nicht krampfhaft. Humor darf die Didaktik nie verdrängen."
-                                    )
+                                # 2) HOBBY — soft reminder EVERY turn when hobby is known.
+                                # Turns 2, 5, 9 become strong pushes; other turns stay soft.
+                                # Concrete example phrasing lowers model's threshold to actually use it.
+                                if self._lernprofil_hobbies:
+                                    _hobby = self._lernprofil_hobbies
+                                    if self._tutoring_turn_count in (2, 5, 9):
+                                        lines.append(
+                                            f"HOBBY-BRÜCKE (JETZT AKTIV NUTZEN): Der Student hat '{_hobby}' als Hobby. "
+                                            f"Baue JETZT eine konkrete Analogie zu '{_hobby}' in deine Erklärung ein — "
+                                            f"z.B. 'Das ist wie bei {_hobby}, wenn...' oder 'Stell dir vor bei {_hobby}...'. "
+                                            f"Nur weglassen, wenn die Analogie beim aktuellen Konzept wirklich gezwungen wirken würde."
+                                        )
+                                    else:
+                                        lines.append(
+                                            f"HOBBY-NOTE: '{_hobby}' als Analogie-Quelle im Hinterkopf behalten. "
+                                            f"Wenn das aktuelle Konzept einen natürlichen Anker zu '{_hobby}' hat — nutzen."
+                                        )
+                                # 2b) HUMOR — every turn when student welcomed humor, with concrete example.
+                                if self._humor_welcomed:
+                                    # Strong push every 3rd turn, soft reminder otherwise.
+                                    if self._tutoring_turn_count % 3 == 0:
+                                        lines.append(
+                                            "HUMOR JETZT EINBAUEN: Der Student hat Humor explizit begrüßt. "
+                                            "Diese Antwort MUSS einen natürlichen leichten Touch haben — "
+                                            "ein augenzwinkernder Vergleich, eine kleine selbstironische Bemerkung, "
+                                            "eine trockene Pointe (z.B. 'Ja, klingt nach Folter, ist aber harmloser als es wirkt' "
+                                            "oder 'mein Lieblings-Paradox'). Nicht albern, nicht flach. Didaktik bleibt Priorität."
+                                        )
+                                    else:
+                                        lines.append(
+                                            "HUMOR-NOTE: Humor ist vom Studenten ausdrücklich erlaubt. "
+                                            "Ein lockerer Ton und kleine trockene Seitenhiebe sind erwünscht, wo sie passen. "
+                                            "Nicht krampfhaft — aber auch nicht steif."
+                                        )
                                 # 2c) CHOSEN METHOD — inject the student's chosen learning approach.
                                 if self._chosen_method:
                                     lines.append(
