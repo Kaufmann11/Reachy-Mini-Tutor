@@ -714,12 +714,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 # Track conversation items during onboarding so we can delete them
                 # for V2 (tutor_basic) once onboarding ends — that literally removes
                 # the name/hobbies from GPT-4o's visible context.
-                if event.type == "conversation.item.created":
-                    if self._onboarding["phase"] == "onboarding":
-                        item = getattr(event, "item", None)
-                        item_id = getattr(item, "id", None) if item is not None else None
-                        if isinstance(item_id, str):
-                            self._onboarding_item_ids.append(item_id)
+                # We track via BOTH `conversation.item.created` AND
+                # `response.output_item.done` because assistant items sometimes arrive
+                # via one or the other depending on flow, and missing even one ack
+                # item leaks Q2-Q6 content back into GPT-4o's context.
+                if self._onboarding["phase"] == "onboarding" and event.type in (
+                    "conversation.item.created",
+                    "response.output_item.done",
+                    "response.output_item.added",
+                ):
+                    item = getattr(event, "item", None)
+                    item_id = getattr(item, "id", None) if item is not None else None
+                    if isinstance(item_id, str) and item_id not in self._onboarding_item_ids:
+                        self._onboarding_item_ids.append(item_id)
 
                 if event.type == "response.done":
                     logger.debug(
@@ -907,15 +914,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     # V2: erase onboarding context so GPT-4o literally
                                     # cannot pattern-match on name/hobby/study. No profile
                                     # is injected back — V2 is the control condition.
+                                    # Small settle delay so any in-flight item-created
+                                    # events land in our tracking list before we delete.
+                                    await asyncio.sleep(0.3)
                                     deleted = 0
+                                    failed = 0
                                     for iid in self._onboarding_item_ids:
                                         try:
                                             await self.connection.conversation.item.delete(item_id=iid)
                                             deleted += 1
                                         except Exception as e:
-                                            logger.debug("Item delete %s failed: %s", iid, e)
-                                    logger.info("V2: deleted %d/%d onboarding items from context",
-                                                deleted, len(self._onboarding_item_ids))
+                                            failed += 1
+                                            logger.warning("V2 item delete %s failed: %s", iid, e)
+                                    logger.info(
+                                        "V2: deleted %d/%d onboarding items (%d failed)",
+                                        deleted, len(self._onboarding_item_ids), failed,
+                                    )
 
                                 ob["phase"] = "tutoring"
                                 self._post_onboarding_stage = "need_method"  # after context answer, ask method
@@ -1018,8 +1032,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     common_turn_rule + " "
                                     "Du hast keine Vorinformationen über den Studierenden — "
                                     "adressiere mit 'Du'. "
+                                    "KEINE KAMERA: In dieser Session hast du keinen Kamerazugriff. "
+                                    "Sag NIE 'ich sehe', 'halt die Folie vor die Kamera', 'zeig mir', "
+                                    "'ich schaue mir das an'. Der Student KANN dir keine Folie zeigen — "
+                                    "er kann dir den Inhalt nur VORLESEN oder BESCHREIBEN. "
+                                    "Wenn der Student eine Folie vor sich hat, bitte ihn, den Text oder "
+                                    "die Kernpunkte der Folie vorzulesen. "
+                                    "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's', 'lass uns starten', "
+                                    "'dann legen wir los' ohne im selben Turn direkt den ersten Inhalt "
+                                    "zu liefern. Ankündigung und Lieferung gehören in denselben Turn. "
                                     "Wenn der Studierende fragt 'weißt du noch X?' oder ähnlich, "
-                                    "antworte: 'Nein, ich starte jede Session neu ohne Vorwissen.'"
+                                    "antworte: 'Nein, ich starte jede Session neu ohne Vorwissen.' "
+                                    "Wenn der Student dich bittet, Name/Hobbys/Studium zu nennen, "
+                                    "sag ehrlich: 'Ich habe keine Informationen über dich gespeichert.' "
+                                    "Gib in dem Fall KEINE erfundenen Details an."
                                 )
                             elif _profile in V1_PROFILES:
                                 self._tutoring_turn_count += 1
@@ -1065,23 +1091,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                             f"HOBBY-NOTE: '{_hobby}' als Analogie-Quelle im Hinterkopf behalten. "
                                             f"Wenn das aktuelle Konzept einen natürlichen Anker zu '{_hobby}' hat — nutzen."
                                         )
-                                # 2b) HUMOR — every turn when student welcomed humor, with concrete example.
-                                if self._humor_welcomed:
-                                    # Strong push every 3rd turn, soft reminder otherwise.
-                                    if self._tutoring_turn_count % 3 == 0:
-                                        lines.append(
-                                            "HUMOR JETZT EINBAUEN: Der Student hat Humor explizit begrüßt. "
-                                            "Diese Antwort MUSS einen natürlichen leichten Touch haben — "
-                                            "ein augenzwinkernder Vergleich, eine kleine selbstironische Bemerkung, "
-                                            "eine trockene Pointe (z.B. 'Ja, klingt nach Folter, ist aber harmloser als es wirkt' "
-                                            "oder 'mein Lieblings-Paradox'). Nicht albern, nicht flach. Didaktik bleibt Priorität."
-                                        )
-                                    else:
-                                        lines.append(
-                                            "HUMOR-NOTE: Humor ist vom Studenten ausdrücklich erlaubt. "
-                                            "Ein lockerer Ton und kleine trockene Seitenhiebe sind erwünscht, wo sie passen. "
-                                            "Nicht krampfhaft — aber auch nicht steif."
-                                        )
+                                # 2b) HUMOR — sporadisch (Turns 3, 7, 11) aber dann STARK und konkret,
+                                # damit es für den Studenten als Humor erkennbar wird. Zwischen diesen
+                                # Turns KEIN Humor-Mandate — der Ton soll nicht dauerhaft witzig sein.
+                                # Nur aktiv wenn Q6 humor_welcomed positiv war.
+                                if self._humor_welcomed and self._tutoring_turn_count in (3, 7, 11):
+                                    lines.append(
+                                        "HUMOR-MOMENT (JETZT spürbar einbauen): Der Student hat in Q6 "
+                                        "Humor ausdrücklich begrüßt. Baue in diese Antwort EINEN konkreten "
+                                        "humoristischen Baustein ein, sodass der Student es als Humor erkennt — "
+                                        "z.B. einen augenzwinkernden Vergleich ('klingt komplizierter als es ist — "
+                                        "ungefähr wie die Abseitsregel'), eine kleine selbstironische Bemerkung "
+                                        "('mein persönliches Lieblings-Chaos'), oder eine trockene Pointe "
+                                        "('ja, Statistiker hatten auch mal Spaß — angeblich'). "
+                                        "EIN Humor-Element, nicht mehr, und nur falls es inhaltlich natürlich "
+                                        "andockt. Danach sofort zurück zur Didaktik. Kein albernes Dauerfeuer."
+                                    )
                                 # 2c) CHOSEN METHOD — inject the student's chosen learning approach.
                                 if self._chosen_method:
                                     lines.append(
