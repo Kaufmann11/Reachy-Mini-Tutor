@@ -588,7 +588,8 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             logger.warning("_restart_session failed: %s", e)
 
     async def _safe_response_create(
-        self, response: Optional[dict] = None, label: str = ""
+        self, response: Optional[dict] = None, label: str = "",
+        drop_if_active: bool = False,
     ) -> bool:
         """Single-flight wrapper around connection.response.create.
 
@@ -597,13 +598,25 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         and any instructions on the rejected call never reach the model. We
         queue subsequent calls and drain them on response.done.
 
+        Set drop_if_active=True for calls that are redundant when a response is
+        already in flight (e.g. tutoring turn responses — the next user input
+        is already in the conversation context, no need to fire a stale-instruction
+        duplicate after the active one finishes). Stage-1/Stage-2/Watchdog
+        triggers must still queue (they are state-machine transitions).
+
         Returns True if the call was issued immediately, False if it was queued
-        (or dropped because there is no connection).
+        or dropped.
         """
         if not self.connection:
             return False
         payload: dict = {"response": response if response is not None else {}}
         if self._response_active:
+            if drop_if_active:
+                logger.info(
+                    "Dropping redundant response.create (label=%s) — response already active",
+                    label or "-",
+                )
+                return False
             self._pending_response_creates.append((payload, label))
             logger.info(
                 "Queued response.create (label=%s, queue_depth=%d)",
@@ -1505,8 +1518,17 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 except asyncio.CancelledError:
                                     return
                                 try:
+                                    # drop_if_active=True: if a response is still
+                                    # being generated when the debounce fires (e.g.
+                                    # the previous tutoring turn), don't queue a
+                                    # second one — the user's latest transcript is
+                                    # already in the conversation context. Pre
+                                    # race-guard fix this was the API's default
+                                    # behavior (silent reject); we restore it for
+                                    # tutoring turns specifically to kill duplicates.
                                     await self._safe_response_create(
                                         response=payload, label=label,
+                                        drop_if_active=True,
                                     )
                                 except Exception as e:
                                     logger.warning("Debounced tutoring fire failed: %s", e)
