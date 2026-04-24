@@ -403,6 +403,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # Last assistant transcript + timestamp for content-based dedup — catches
         # model-level "speak → emotion → speak again" repeats after a movement tool.
         self._last_assistant_transcript: tuple[str, float] = ("", 0.0)
+        # VAD-cut merge: when a long user turn is split into multiple
+        # input_audio_transcription.completed events within ~1s, the bot
+        # otherwise fires one response per fragment. We debounce: every new
+        # tutoring-phase transcript cancels the pending response task and
+        # schedules a fresh one a short delay later, so all fragments land
+        # in the conversation before a single response is generated.
+        self._tutoring_response_debounce_task: asyncio.Task | None = None
+        # Watchdog: if response.done never arrives (network hiccup, error not
+        # surfaced, etc.) the single-flight flag stays True forever and all
+        # subsequent response.creates are queued and never drain — session
+        # appears frozen. Reset task tracks the latest response.created and
+        # auto-clears the flag if response.done doesn't follow within 45s.
+        self._response_active_watchdog_task: asyncio.Task | None = None
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -703,6 +716,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 response={
                     "instructions": instructions,
                     "tool_choice": "none",
+                    "tools": [],
                 },
                 label=f"onboarding_q{q_num}{'_reask' if reask else ''}",
             )
@@ -746,6 +760,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._pending_response_creates = []
         self._seen_transcript_keys = set()
         self._last_assistant_transcript = ("", 0.0)
+        if self._tutoring_response_debounce_task and not self._tutoring_response_debounce_task.done():
+            self._tutoring_response_debounce_task.cancel()
+        self._tutoring_response_debounce_task = None
+        if self._response_active_watchdog_task and not self._response_active_watchdog_task.done():
+            self._response_active_watchdog_task.cancel()
+        self._response_active_watchdog_task = None
         conv = ConversationManager("student_001")
         user_id = "student_001"
         # Tracks the most recent user transcript across iterations of the event loop.
@@ -853,6 +873,36 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     logger.debug("Response created")
                     self._movement_dispatched_this_response = False
                     self._response_active = True
+                    # Watchdog: if response.done never arrives, force-clear the
+                    # single-flight flag after 45s so queued response.creates
+                    # can drain. Prevents end-of-session freeze.
+                    if (
+                        self._response_active_watchdog_task
+                        and not self._response_active_watchdog_task.done()
+                    ):
+                        self._response_active_watchdog_task.cancel()
+
+                    async def _stale_active_watchdog() -> None:
+                        try:
+                            await asyncio.sleep(45.0)
+                        except asyncio.CancelledError:
+                            return
+                        if self._response_active:
+                            logger.warning(
+                                "Stale _response_active watchdog fired — "
+                                "no response.done in 45s. Forcing flag clear "
+                                "and draining queue (depth=%d).",
+                                len(self._pending_response_creates),
+                            )
+                            self._response_active = False
+                            try:
+                                await self._drain_pending_responses()
+                            except Exception as e:
+                                logger.warning("Watchdog drain failed: %s", e)
+
+                    self._response_active_watchdog_task = asyncio.create_task(
+                        _stale_active_watchdog()
+                    )
 
                 # Track conversation items during onboarding so we can delete them
                 # for V2 (tutor_basic) once onboarding ends — that literally removes
@@ -882,6 +932,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     # Clear single-flight flag first so the watchdog below (and any
                     # queued responses) can actually issue a new response.create.
                     self._response_active = False
+                    if (
+                        self._response_active_watchdog_task
+                        and not self._response_active_watchdog_task.done()
+                    ):
+                        self._response_active_watchdog_task.cancel()
                     # Guardrail: re-ask the current Q if model produced no audio.
                     # During onboarding we re-ask. During tutoring, if a movement tool
                     # was dispatched but no speech was produced (common failure mode —
@@ -919,6 +974,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                             "Sprich kurz und klar (1–3 Sätze)."
                                         ),
                                         "tool_choice": "none",
+                                        "tools": [],
                                     },
                                     label="watchdog_verbal_retry",
                                 )
@@ -1093,10 +1149,17 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # Stage-1 opener because the general tutoring_instructions with
                                 # ANTI-LEAK only apply to later turns, not this one.
                                 _stage1_antileak = (
-                                    "KEIN Name, KEINE Hobby-Rückbezüge, KEINE Bezugnahme "
-                                    "auf das Onboarding ('wie du gesagt hast' etc.). Beginne "
-                                    "direkt mit den zwei Fragen. Sprich den Studierenden "
-                                    "höchstens mit 'Du' an. "
+                                    "ANTI-LEAK (HÖCHSTE PRIORITÄT): "
+                                    "KEIN Name in der Anrede oder im Satz. KEINE Hobby-Rückbezüge. "
+                                    "KEINE Bezugnahme auf das Onboarding ('wie du gesagt hast', "
+                                    "'du hast erwähnt', 'aus deinen Antworten'). "
+                                    "STRIKT VERBOTENE Eröffnungen — auch nicht sinngemäß: "
+                                    "'Klar, [Name]', 'Schön, dich kennenzulernen', 'Hallo [Name]', "
+                                    "'super, dass', 'toll, dass', 'spannend, dass'. "
+                                    "Beginne NEUTRAL und SACHLICH, z.B. 'Bevor wir starten, zwei "
+                                    "kurze Fragen:' oder 'Zwei Fragen vorab:'. "
+                                    "Sprich den Studierenden NUR mit 'Du' an, NIEMALS mit Namen. "
+                                    "KEIN Lob, KEINE Aufmunterung. "
                                     if _profile == "tutor_basic" else ""
                                 )
                                 await self._safe_response_create(
@@ -1112,6 +1175,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                             "Sprich vollständig und warte dann auf die Antwort des Studenten."
                                         ),
                                         "tool_choice": "none",
+                                        "tools": [],
                                     },
                                     label="post_onboarding_stage1",
                                 )
@@ -1174,6 +1238,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         "Keine Bewegungs-Tools. Noch NICHT lehren. Warte auf die Antwort."
                                     ),
                                     "tool_choice": "none",
+                                    "tools": [],
                                 },
                                 label="post_onboarding_stage2_method",
                             )
@@ -1416,9 +1481,38 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 )
                             else:
                                 tutoring_instructions = common_turn_rule
-                            await self._safe_response_create(
-                                response={"instructions": tutoring_instructions, "tool_choice": "auto"},
-                                label=f"tutoring_turn_{self._tutoring_turn_count}",
+                            # VAD-cut merge: cancel any in-flight debounce task
+                            # from a previous transcript fragment in this same
+                            # user turn, then schedule the response 0.9s out.
+                            # If another fragment arrives within that window it
+                            # cancels this task again, and only the final
+                            # scheduled response actually fires — fragments
+                            # accumulate as conversation items meanwhile.
+                            if (
+                                self._tutoring_response_debounce_task
+                                and not self._tutoring_response_debounce_task.done()
+                            ):
+                                self._tutoring_response_debounce_task.cancel()
+                            _payload = {
+                                "instructions": tutoring_instructions,
+                                "tool_choice": "auto",
+                            }
+                            _label = f"tutoring_turn_{self._tutoring_turn_count}"
+
+                            async def _debounced_fire(payload: dict, label: str) -> None:
+                                try:
+                                    await asyncio.sleep(0.9)
+                                except asyncio.CancelledError:
+                                    return
+                                try:
+                                    await self._safe_response_create(
+                                        response=payload, label=label,
+                                    )
+                                except Exception as e:
+                                    logger.warning("Debounced tutoring fire failed: %s", e)
+
+                            self._tutoring_response_debounce_task = asyncio.create_task(
+                                _debounced_fire(_payload, _label)
                             )
 
                 # Handle assistant transcription. Two duplicate sources to guard:
@@ -1441,19 +1535,41 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     if len(self._seen_transcript_keys) > 256:
                         keys_list = list(self._seen_transcript_keys)
                         self._seen_transcript_keys = set(keys_list[-128:])
-                    # Content dedup: drop if the same transcript was emitted
-                    # within the last few seconds (model-level repeat).
+                    # Content dedup: drop if the same transcript (or a
+                    # substring/suffix of the previous one) was emitted within
+                    # the last few seconds — catches the "speak → emotion →
+                    # speak the question alone" pattern where the second
+                    # transcript is a tail of the first.
                     _now = asyncio.get_event_loop().time()
                     _normalized = (event.transcript or "").strip()
                     if _normalized:
                         prev_text, prev_ts = self._last_assistant_transcript
-                        if _normalized == prev_text and (_now - prev_ts) < 8.0:
+                        _within_window = (_now - prev_ts) < 8.0
+                        _is_dup = False
+                        if prev_text and _within_window:
+                            if _normalized == prev_text:
+                                _is_dup = True
+                            else:
+                                # Treat a transcript as a duplicate if it's
+                                # contained in (or contains) the previous one
+                                # AND the shorter side is at least 12 chars —
+                                # avoids over-matching short common phrases
+                                # like "Ja." or "Stimmt.".
+                                _short = _normalized if len(_normalized) <= len(prev_text) else prev_text
+                                _long = prev_text if _short is _normalized else _normalized
+                                if len(_short) >= 12 and _short in _long:
+                                    _is_dup = True
+                        if _is_dup:
                             logger.info(
                                 "Skipping duplicate transcript content %r (Δt=%.2fs)",
-                                _normalized[:60], _now - prev_ts,
+                                _normalized[:80], _now - prev_ts,
                             )
                             continue
-                        self._last_assistant_transcript = (_normalized, _now)
+                        # Keep the longer of the two so future suffixes match.
+                        if prev_text and _within_window and len(prev_text) > len(_normalized):
+                            self._last_assistant_transcript = (prev_text, _now)
+                        else:
+                            self._last_assistant_transcript = (_normalized, _now)
                     logger.debug(f"Assistant transcript: {event.transcript}")
                     # Track name usage cadence so we can inject reminders when name is stale
                     if self._lernprofil_name and self._onboarding["phase"] == "tutoring":
