@@ -373,7 +373,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._lernprofil_hobbies: str = ""  # Extracted hobbies/interests from Q6
         self._humor_welcomed: bool = False  # Parsed from Q6 — drives periodic humor mandate
         self._chosen_method: str = ""  # Post-onboarding learning approach (slide/overview/exercise)
-        self._post_onboarding_stage: str = ""  # "" | "need_context" | "need_method" | "done"
+        self._post_onboarding_stage: str = ""  # "" | "awaiting_deadline" | "awaiting_wissensstand" | "awaiting_method" | "done"
         self._tutoring_turn_count: int = 0  # Bot tutoring turns since onboarding
         self._last_name_used_turn: int = -99  # Turn index when name was last spoken
         self._document_uploaded: bool = False  # True once student uploaded any doc
@@ -1151,16 +1151,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     )
 
                                 ob["phase"] = "tutoring"
-                                self._post_onboarding_stage = "need_method"  # after context answer, ask method
+                                # State machine: Stage-1a (deadline) → Stage-1b (Wissensstand) →
+                                # V1 Stage-2 (method) → done. Each as its own response.create
+                                # so the model can't bundle questions and silently skip one.
+                                self._post_onboarding_stage = "awaiting_deadline"
                                 logger.info("Onboarding complete → tutoring (profile=%s)", _profile)
 
-                                # Stage 1 of post-onboarding: Deadline + Wissensstand only.
-                                # Method question is asked AFTER student answers these two, so it
-                                # cannot be buried in a long 3-question reply and skipped.
-                                # V2 (tutor_basic) also asks this — it's context-gathering, not
-                                # personalization — but must not leak the name/hobbies into the
-                                # Stage-1 opener because the general tutoring_instructions with
-                                # ANTI-LEAK only apply to later turns, not this one.
                                 _stage1_antileak = (
                                     "ANTI-LEAK (HÖCHSTE PRIORITÄT): "
                                     "KEIN Name in der Anrede oder im Satz. KEINE Hobby-Rückbezüge. "
@@ -1169,8 +1165,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "STRIKT VERBOTENE Eröffnungen — auch nicht sinngemäß: "
                                     "'Klar, [Name]', 'Schön, dich kennenzulernen', 'Hallo [Name]', "
                                     "'super, dass', 'toll, dass', 'spannend, dass'. "
-                                    "Beginne NEUTRAL und SACHLICH, z.B. 'Bevor wir starten, zwei "
-                                    "kurze Fragen:' oder 'Zwei Fragen vorab:'. "
+                                    "Beginne NEUTRAL und SACHLICH. "
                                     "Sprich den Studierenden NUR mit 'Du' an, NIEMALS mit Namen. "
                                     "KEIN Lob, KEINE Aufmunterung. "
                                     if _profile == "tutor_basic" else ""
@@ -1180,17 +1175,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         "instructions": (
                                             "Das Onboarding ist abgeschlossen. "
                                             + _stage1_antileak +
-                                            "Stelle jetzt GENAU diese zwei Fragen — "
-                                            "eine nach der anderen, in EINER Antwort, kurz und natürlich: "
-                                            "1. 'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
-                                            "2. 'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
-                                            "Keine Prüfungs-Annahmen. Noch NICHT lehren. Keine Bewegungs-Tools in dieser Antwort. "
-                                            "Sprich vollständig und warte dann auf die Antwort des Studenten."
+                                            "Stelle jetzt GENAU EINE Frage, wörtlich: "
+                                            "'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
+                                            "Stelle KEINE zweite Frage in dieser Antwort. Lehre noch NICHT. "
+                                            "Keine Bewegungs-Tools. Sprich kurz und warte dann auf die Antwort."
                                         ),
                                         "tool_choice": "none",
                                         "tools": [],
                                     },
-                                    label="post_onboarding_stage1",
+                                    label="post_onboarding_stage1a_deadline",
                                 )
                             else:
                                 # Ask next question — model will briefly acknowledge the answer first
@@ -1218,48 +1211,84 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 logger.info("Tutoring noise-filtered single-word %r — not responding", text)
                                 continue
 
-                        # Post-onboarding staging (V1 only — V2 is generic and doesn't need
-                        # a chosen method since it shouldn't tailor its approach anyway).
-                        # Stage 1 answer received → ask method question. Stage 2 answer → capture method.
+                        # Stage-1a answer (Deadline) → fire Stage-1b (Wissensstand).
+                        # Both V1 and V2 — Stage-1 is context-gathering, not personalization.
                         if (
-                            _profile in V1_PROFILES
+                            _is_tutor
                             and ob["phase"] == "tutoring"
-                            and self._post_onboarding_stage == "need_method"
+                            and self._post_onboarding_stage == "awaiting_deadline"
                             and self.connection
                         ):
-                            # Capture pacing flags from the deadline+Wissensstand answer.
-                            # These drive whether we force EXPLAIN-Mode on frustration later.
                             _ctx_lower = (event.transcript or "").lower()
-                            if any(k in _ctx_lower for k in ("einsteiger", "anfänger", "neu in", "noch keine ahnung", "grundkenntnis")):
-                                self._einsteiger_flag = True
                             if any(k in _ctx_lower for k in ("deadline", "prüfung", "klausur", "abgabe", "minuten", "stunde", "morgen", "heute noch")):
                                 self._deadline_flag = True
                             if any(k in _ctx_lower for k in ("multiple-choice", "multiple choice", "mc-test", "mc test", "ankreuzen")):
                                 self._mc_flag = True
                             logger.info(
-                                "V1 pacing flags set: einsteiger=%s deadline=%s mc=%s (from %r)",
-                                self._einsteiger_flag, self._deadline_flag, self._mc_flag, _ctx_lower[:100],
+                                "Deadline answer captured: deadline=%s mc=%s (profile=%s, from %r)",
+                                self._deadline_flag, self._mc_flag, _profile, _ctx_lower[:100],
                             )
-                            self._post_onboarding_stage = "awaiting_method_answer"
+                            self._post_onboarding_stage = "awaiting_wissensstand"
+                            _stage1b_antileak = (
+                                "ANTI-LEAK: KEIN Name. KEIN Lob. KEIN 'super', 'klasse', 'toll'. "
+                                "Sprich neutral und sachlich. "
+                                if _profile == "tutor_basic" else ""
+                            )
                             await self._safe_response_create(
                                 response={
                                     "instructions": (
-                                        "Kurze Anerkennung der Antworten (1 Satz, mit Namen). "
-                                        "DANN stelle GENAU diese Frage: "
-                                        "'Wie möchten wir vorgehen — Folie-für-Folie durchgehen, zuerst einen Überblick über die Inhalte, "
-                                        "oder direkt mit Übungsfragen starten?' "
-                                        "Keine Bewegungs-Tools. Noch NICHT lehren. Warte auf die Antwort."
+                                        _stage1b_antileak +
+                                        "Stelle jetzt GENAU EINE Frage, wörtlich: "
+                                        "'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
+                                        "Keine Vor-Erklärung, keine zweite Frage, kein Lehren. "
+                                        "Keine Bewegungs-Tools. Warte auf die Antwort."
                                     ),
                                     "tool_choice": "none",
                                     "tools": [],
                                 },
-                                label="post_onboarding_stage2_method",
+                                label="post_onboarding_stage1b_wissensstand",
                             )
                             continue
+
+                        # Stage-1b answer (Wissensstand) → V1 fires Stage-2 (method);
+                        # V2 transitions to "done" and falls through to normal tutoring.
+                        if (
+                            _is_tutor
+                            and ob["phase"] == "tutoring"
+                            and self._post_onboarding_stage == "awaiting_wissensstand"
+                            and self.connection
+                        ):
+                            _ctx_lower = (event.transcript or "").lower()
+                            if any(k in _ctx_lower for k in ("einsteiger", "anfänger", "neu in", "noch keine ahnung", "grundkenntnis")):
+                                self._einsteiger_flag = True
+                            logger.info(
+                                "Wissensstand answer captured: einsteiger=%s (profile=%s, from %r)",
+                                self._einsteiger_flag, _profile, _ctx_lower[:100],
+                            )
+                            if _profile in V1_PROFILES:
+                                self._post_onboarding_stage = "awaiting_method"
+                                await self._safe_response_create(
+                                    response={
+                                        "instructions": (
+                                            "Kurze Anerkennung der Antwort (1 Satz, mit Namen). "
+                                            "DANN stelle GENAU diese Frage: "
+                                            "'Wie möchten wir vorgehen — Folie-für-Folie durchgehen, zuerst einen Überblick über die Inhalte, "
+                                            "oder direkt mit Übungsfragen starten?' "
+                                            "Keine Bewegungs-Tools. Noch NICHT lehren. Warte auf die Antwort."
+                                        ),
+                                        "tool_choice": "none",
+                                        "tools": [],
+                                    },
+                                    label="post_onboarding_stage2_method",
+                                )
+                                continue
+                            else:
+                                # V2: stage gathering done, fall through to normal tutoring.
+                                self._post_onboarding_stage = "done"
                         if (
                             _profile in V1_PROFILES
                             and ob["phase"] == "tutoring"
-                            and self._post_onboarding_stage == "awaiting_method_answer"
+                            and self._post_onboarding_stage == "awaiting_method"
                         ):
                             # Capture chosen method from user's answer.
                             raw_method = (event.transcript or "").lower()
