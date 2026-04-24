@@ -400,6 +400,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._pending_response_creates: list[tuple[dict, str]] = []
         # Dedup set for transcript events (SDK fires legacy + GA alias for same response).
         self._seen_transcript_keys: set[tuple] = set()
+        # Last assistant transcript + timestamp for content-based dedup — catches
+        # model-level "speak → emotion → speak again" repeats after a movement tool.
+        self._last_assistant_transcript: tuple[str, float] = ("", 0.0)
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -691,10 +694,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 self._q_lock_release_task.cancel()
             self._response_create_issued = True
             self._onboarding_q_pending = True
+            # Onboarding Qs use tool_choice="none": movement during a Q ask has
+            # no didactic value and causes the model to repeat the question
+            # after the emotion ("speak → emotion → speak again" pattern), which
+            # duplicates the transcript in the UI. Stage-1/Stage-2 already use
+            # "none" for the same reason.
             await self._safe_response_create(
                 response={
                     "instructions": instructions,
-                    "tool_choice": "auto",
+                    "tool_choice": "none",
                 },
                 label=f"onboarding_q{q_num}{'_reask' if reask else ''}",
             )
@@ -737,6 +745,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._response_active = False
         self._pending_response_creates = []
         self._seen_transcript_keys = set()
+        self._last_assistant_transcript = ("", 0.0)
         conv = ConversationManager("student_001")
         user_id = "student_001"
         # Tracks the most recent user transcript across iterations of the event loop.
@@ -1412,11 +1421,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 label=f"tutoring_turn_{self._tutoring_turn_count}",
                             )
 
-                # Handle assistant transcription. Some SDK versions fire BOTH
-                # response.audio_transcript.done (legacy) AND
-                # response.output_audio_transcript.done (GA alias) for the same
-                # response — that duplicated every bot utterance in the log and
-                # UI. Dedupe by response_id + item_id.
+                # Handle assistant transcription. Two duplicate sources to guard:
+                # (a) Some SDKs fire both response.audio_transcript.done (legacy)
+                #     AND response.output_audio_transcript.done (GA alias) for
+                #     the same audio item.
+                # (b) After a movement tool the model sometimes repeats the
+                #     same text as a second audio item (speak → emotion → speak
+                #     again), violating the "Bewegung beendet Turn" rule.
+                # (a) is caught by (response_id, item_id) dedup.
+                # (b) is caught by transcript content dedup within a short window.
                 if event.type in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
                     _rid = getattr(event, "response_id", None)
                     _iid = getattr(event, "item_id", None)
@@ -1425,13 +1438,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         logger.debug("Skipping duplicate transcript event %s", _dedup_key)
                         continue
                     self._seen_transcript_keys.add(_dedup_key)
-                    # Prune to a small cap so the set doesn't grow unbounded.
                     if len(self._seen_transcript_keys) > 256:
-                        # Keep the most recent 128 by dropping to a fresh set.
-                        # Order of a set is insertion in CPython 3.7+ for dicts,
-                        # but not guaranteed for sets — use a list slice instead.
                         keys_list = list(self._seen_transcript_keys)
                         self._seen_transcript_keys = set(keys_list[-128:])
+                    # Content dedup: drop if the same transcript was emitted
+                    # within the last few seconds (model-level repeat).
+                    _now = asyncio.get_event_loop().time()
+                    _normalized = (event.transcript or "").strip()
+                    if _normalized:
+                        prev_text, prev_ts = self._last_assistant_transcript
+                        if _normalized == prev_text and (_now - prev_ts) < 8.0:
+                            logger.info(
+                                "Skipping duplicate transcript content %r (Δt=%.2fs)",
+                                _normalized[:60], _now - prev_ts,
+                            )
+                            continue
+                        self._last_assistant_transcript = (_normalized, _now)
                     logger.debug(f"Assistant transcript: {event.transcript}")
                     # Track name usage cadence so we can inject reminders when name is stale
                     if self._lernprofil_name and self._onboarding["phase"] == "tutoring":
