@@ -255,6 +255,44 @@ def _build_reactive_mandates(
     return mandates, fired
 
 
+def _is_probably_noise_in_tutoring(text: str) -> bool:
+    """Stricter filter for tutoring-phase turns.
+
+    Catches single-word VAD/transcription artifacts like 'Lauterbach',
+    'Klavierlehrer', 'Selbstvertrauen', 'Lautsprecher', 'Wöschwüchi' that
+    the gpt-4o-transcribe sometimes produces on background noise or
+    mid-sentence pauses. These get through `_is_valid_onboarding_answer`
+    because they're >2 chars and not in the filler list.
+
+    Return True if the text should be treated as noise and ignored.
+    """
+    import re
+    stripped = (text or "").strip().rstrip(".!?,;:")
+    if not stripped:
+        return True
+    words = stripped.split()
+    # Multi-word turns are rarely noise — let them through.
+    if len(words) >= 2:
+        return False
+    # Single word case: allow valid short replies and reactive signals.
+    lower = words[0].lower()
+    short_valid = {
+        "ja", "nein", "ne", "doch", "ok", "okay", "weiter",
+        "stopp", "halt", "pause", "nächste", "zurück",
+        "gut", "richtig", "falsch", "verstanden",
+        "genau", "stimmt",
+    }
+    if lower in short_valid:
+        return False
+    # If the single word matches a reactive trigger (unlikely for 1 word
+    # but keep the check), let it through.
+    for pattern in _TRIGGERS.values():
+        if re.search(pattern, lower, flags=re.IGNORECASE):
+            return False
+    # Otherwise: single unfamiliar word in tutoring → almost certainly noise.
+    return True
+
+
 def _is_valid_onboarding_answer(text: str, q_num: int) -> bool:
     """Return True if the user turn looks like a real answer (not a counter-question or filler)."""
     stripped = text.strip()
@@ -340,6 +378,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._last_name_used_turn: int = -99  # Turn index when name was last spoken
         self._document_uploaded: bool = False  # True once student uploaded any doc
         self._onboarding_item_ids: list[str] = []  # V2: delete these to erase onboarding context
+        # --- Pacing + Frustrations-Override state (V1) ---
+        # Triggered by reactive signals in the user's last turn. When on, the
+        # NEXT bot turn must be in EXPLAIN-Mode: deliver 2-3 sentences of fact +
+        # one yes/no check question. No Socratic chain, no hobby analogy.
+        self._explain_mode_next_turn: bool = False
+        self._no_idea_streak: int = 0   # consecutive user turns with no_idea trigger
+        self._einsteiger_flag: bool = False  # student described self as Einsteiger/beginner
+        self._deadline_flag: bool = False    # student mentioned deadline/Prüfung/MC
+        self._mc_flag: bool = False          # multiple-choice specifically
         self.gradio_mode = gradio_mode
         self.instance_path = instance_path
         # Track how the API key was provided (env vs textbox) and its value
@@ -609,6 +656,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._last_name_used_turn = -99
         self._document_uploaded = False
         self._onboarding_item_ids = []
+        self._explain_mode_next_turn = False
+        self._no_idea_streak = 0
+        self._einsteiger_flag = False
+        self._deadline_flag = False
+        self._mc_flag = False
         conv = ConversationManager("student_001")
         user_id = "student_001"
         # Tracks the most recent user transcript across iterations of the event loop.
@@ -632,7 +684,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "turn_detection": {
                                     "type": "server_vad",
                                     "threshold": 0.85,
-                                    "silence_duration_ms": 1000,
+                                    "silence_duration_ms": 1400,
                                     "interrupt_response": True,
                                     "create_response": False,
                                 },
@@ -969,6 +1021,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             if not _is_valid_onboarding_answer(text, 0):
                                 logger.info("Tutoring phantom-filtered transcript %r — not responding", text)
                                 continue
+                            # Stricter single-word noise filter for tutoring.
+                            # Catches 'Lauterbach', 'Klavierlehrer', 'Selbstvertrauen'
+                            # etc. — single unknown words that got through the filler
+                            # list because they're >2 chars.
+                            if _is_probably_noise_in_tutoring(text):
+                                logger.info("Tutoring noise-filtered single-word %r — not responding", text)
+                                continue
 
                         # Post-onboarding staging (V1 only — V2 is generic and doesn't need
                         # a chosen method since it shouldn't tailor its approach anyway).
@@ -979,6 +1038,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             and self._post_onboarding_stage == "need_method"
                             and self.connection
                         ):
+                            # Capture pacing flags from the deadline+Wissensstand answer.
+                            # These drive whether we force EXPLAIN-Mode on frustration later.
+                            _ctx_lower = (event.transcript or "").lower()
+                            if any(k in _ctx_lower for k in ("einsteiger", "anfänger", "neu in", "noch keine ahnung", "grundkenntnis")):
+                                self._einsteiger_flag = True
+                            if any(k in _ctx_lower for k in ("deadline", "prüfung", "klausur", "abgabe", "minuten", "stunde", "morgen", "heute noch")):
+                                self._deadline_flag = True
+                            if any(k in _ctx_lower for k in ("multiple-choice", "multiple choice", "mc-test", "mc test", "ankreuzen")):
+                                self._mc_flag = True
+                            logger.info(
+                                "V1 pacing flags set: einsteiger=%s deadline=%s mc=%s (from %r)",
+                                self._einsteiger_flag, self._deadline_flag, self._mc_flag, _ctx_lower[:100],
+                            )
                             self._post_onboarding_stage = "awaiting_method_answer"
                             await self.connection.response.create(
                                 response={
@@ -1031,7 +1103,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 tutoring_instructions = (
                                     common_turn_rule + " "
                                     "Du hast keine Vorinformationen über den Studierenden — "
-                                    "adressiere mit 'Du'. "
+                                    "adressiere konsequent mit 'Du', NIEMALS mit einem Namen. "
+                                    "ANTI-LEAK (HÖCHSTE PRIORITÄT): SELBST WENN du in deinem Kontext "
+                                    "irgendwo Details über den Studierenden (Name, Hobbys, Studium, "
+                                    "Motivation, Lernstil, Humor-Präferenz) zu sehen oder zu erinnern "
+                                    "scheinst — ERWÄHNE SIE NIE. Nutze NIE den Namen. Nutze NIE ein Hobby "
+                                    "als Analogie. Sage NIE 'du hattest erwähnt, dass...'. Jeder Turn ist "
+                                    "ein Kaltstart. Wenn der Studierende fragt 'weißt du noch X?' oder "
+                                    "'wie heiße ich?' → antworte EXAKT: 'Ich habe keine Informationen "
+                                    "über dich gespeichert.' STOPPE danach, KEIN 'aber du hattest gesagt', "
+                                    "KEIN 'du heißt X', KEINE Details. "
                                     "KEINE KAMERA: In dieser Session hast du keinen Kamerazugriff. "
                                     "Sag NIE 'ich sehe', 'halt die Folie vor die Kamera', 'zeig mir', "
                                     "'ich schaue mir das an'. Der Student KANN dir keine Folie zeigen — "
@@ -1040,12 +1121,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "die Kernpunkte der Folie vorzulesen. "
                                     "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's', 'lass uns starten', "
                                     "'dann legen wir los' ohne im selben Turn direkt den ersten Inhalt "
-                                    "zu liefern. Ankündigung und Lieferung gehören in denselben Turn. "
-                                    "Wenn der Studierende fragt 'weißt du noch X?' oder ähnlich, "
-                                    "antworte: 'Nein, ich starte jede Session neu ohne Vorwissen.' "
-                                    "Wenn der Student dich bittet, Name/Hobbys/Studium zu nennen, "
-                                    "sag ehrlich: 'Ich habe keine Informationen über dich gespeichert.' "
-                                    "Gib in dem Fall KEINE erfundenen Details an."
+                                    "zu liefern. "
+                                    "NEUTRALER TON: Keine didaktischen Lob-Floskeln wie 'gut gemacht', "
+                                    "'kein Problem', 'du machst das gut', 'du hast das super erkannt'. "
+                                    "Bleib sachlich wie eine generische KI-Suchantwort. Bestätigungen "
+                                    "höchstens mit 'Richtig.' / 'Das stimmt.' ohne Ermutigung."
                                 )
                             elif _profile in V1_PROFILES:
                                 self._tutoring_turn_count += 1
@@ -1065,6 +1145,52 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     logger.info(
                                         "V1 reactive triggers fired turn=%d profile=%s triggers=%s",
                                         self._tutoring_turn_count, _profile, fired_triggers,
+                                    )
+                                # --- Pacing + Frustrations-Override state update ---
+                                # Update no_idea streak: increment on no_idea, reset otherwise.
+                                if "no_idea" in fired_triggers:
+                                    self._no_idea_streak += 1
+                                else:
+                                    self._no_idea_streak = 0
+                                # Decide whether next turn must be EXPLAIN-Mode.
+                                # - frustration: always (user is already upset)
+                                # - no_idea streak ≥ 2: always (Socratic isn't working)
+                                # - no_idea streak ≥ 1 + Einsteiger/MC/Deadline flag: yes (prevent escalation)
+                                explain_mode = False
+                                explain_reason = ""
+                                if "frustration" in fired_triggers:
+                                    explain_mode = True
+                                    explain_reason = "frustration"
+                                elif self._no_idea_streak >= 2:
+                                    explain_mode = True
+                                    explain_reason = "no_idea_streak≥2"
+                                elif self._no_idea_streak >= 1 and (
+                                    self._einsteiger_flag or self._mc_flag or self._deadline_flag
+                                ):
+                                    explain_mode = True
+                                    explain_reason = "no_idea+einsteiger/mc/deadline"
+                                if explain_mode:
+                                    logger.info(
+                                        "V1 EXPLAIN-Mode active turn=%d reason=%s (streak=%d flags e=%s d=%s mc=%s)",
+                                        self._tutoring_turn_count, explain_reason, self._no_idea_streak,
+                                        self._einsteiger_flag, self._deadline_flag, self._mc_flag,
+                                    )
+                                    # Suppress reactive hobby-analogy + Socratic sub-question; we want
+                                    # direct delivery. Keep only the emotional acknowledgment intent.
+                                    reactive_mandates = []
+                                    lines.append(
+                                        "EXPLAIN-MODE (JETZT STRIKT): Der Student ist unsicher oder "
+                                        "frustriert. Beende diese Sokratik-Runde SOFORT. "
+                                        "(1) EIN Satz echter emotionaler Anerkennung "
+                                        f"{('mit Namen ' + repr(self._lernprofil_name)) if self._lernprofil_name else ''} "
+                                        "(variiere Wording, keine Floskel). "
+                                        "(2) Liefere DIREKT 2–3 Sätze klare Fakt-Erklärung zum "
+                                        "aktuellen Konzept — keine Gegenfrage, keine Hobby-Analogie, "
+                                        "kein 'Stell dir vor', kein 'Du denkst in Richtung'. "
+                                        "(3) Schließe mit EINER einfachen Ja/Nein- oder "
+                                        "Kurz-Check-Frage ab ('Passt das so?' / 'Ist der Punkt klar?'). "
+                                        "Danach direkt nächstes Konzept oder nächste Folie. "
+                                        "KEINE weitere Sokratik zum selben Punkt in dieser Antwort."
                                     )
                                 lines.extend(reactive_mandates)
                                 # 1) NAME — single imperative line.
@@ -1129,19 +1255,26 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 _wa_name_hint = f" Ansprache mit Namen '{_wa_name}'." if _wa_name else ""
                                 lines.extend([
                                     "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's' / 'wir gehen durch' / 'lass uns anschauen' ohne im selben Satz direkt zu liefern.",
-                                    "RICHTIGE ANTWORT SPEZIFISCH FEIERN: Wenn die Antwort des Studenten sachlich korrekt ist, benenne KONKRET den Punkt den er erkannt hat ('Genau — du hast erkannt, dass …'). KEIN nacktes 'Genau' + bloße Wiederholung. Variiere das Anerkennungs-Wording jedes Mal.",
-                                    (
+                                    "RICHTIGE ANTWORT WÜRDIGEN: Wenn die Antwort des Studenten sachlich korrekt ist, benenne KONKRET den erkannten Punkt. Variiere das Anerkennungs-Wording JEDES Mal — keine Wiederverwendung identischer Formulierungen in aufeinander folgenden Turns. KEIN nacktes 'Genau' + bloße Wiederholung.",
+                                ])
+                                # KBD wrong-answer template — suppressed in EXPLAIN-Mode
+                                # because explain-mode already replaces it with direct delivery.
+                                if not explain_mode:
+                                    lines.append(
                                         "FALSCHE ANTWORT — KBD-DIDAKTIK: Wenn die Antwort falsch, teilweise richtig oder am Thema vorbei ist, "
-                                        "folge diesem Muster STRIKT in dieser Reihenfolge: "
-                                        "(a) KEIN 'falsch' / 'nein' / 'das stimmt nicht'. Würdige den Denkansatz in einem Satz "
-                                        "('Interessante Überlegung' / 'Du denkst in die Richtung von X — nachvollziehbar'). "
+                                        "folge diesem Muster: (a) KEIN 'falsch' / 'nein' / 'das stimmt nicht'. Würdige den Denkansatz "
+                                        "kurz — **variiere das Wording jedes Mal**, keine Wiederholung von 'du denkst in Richtung' "
+                                        "oder 'interessante Überlegung' aus vorherigen Turns. "
                                         f"(b) Benenne konkret WO der Denkweg abzweigt ODER welcher Teil schon auf dem richtigen Pfad ist.{_wa_hobby_hint} "
                                         "(c) Stelle EINE gezielte Teilfrage, die vom falschen Abzweig zurück zum korrekten Pfad führt — "
                                         "KEINE reine Wiederholung der ursprünglichen Frage, sondern ein echter Scaffolding-Schritt. "
                                         f"(d) Erst nach dem 2. Fehlversuch ein winziger Hinweis, nie eine fertige Lösung.{_wa_name_hint} "
                                         "Ziel: der Student findet die Antwort selbst, fühlt sich nicht bloßgestellt."
-                                    ),
-                                    "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept, schließe mit EINER Check-Frage. Nach User-Antwort direkt nächstes Konzept. KEINE 3. Folge-Frage zum selben Punkt.",
+                                    )
+                                lines.append(
+                                    "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept, schließe mit EINER Check-Frage. Nach User-Antwort direkt nächstes Konzept. KEINE 3. Folge-Frage zum selben Punkt."
+                                )
+                                lines.extend([
                                     "KEINE KAMERA: Sag nie 'ich sehe'. Für Folien nur rag_tool.",
                                     "KEIN INFO-DUMP: Max 3 Sätze, ein Gedanke, enden mit Folge-Frage.",
                                     "KEINE ERFUNDENEN FAKTEN: Unsicher → 'Das weiß ich nicht sicher.'",
