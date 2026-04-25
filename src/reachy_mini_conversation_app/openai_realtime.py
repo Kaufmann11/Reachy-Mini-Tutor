@@ -361,6 +361,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._onboarding_q_pending = False      # True while an onboarding-Q response is being generated
         self._movement_dispatched_this_response = False  # True after first movement tool dispatched in current response
         self._movement_blocked_until_user_input = False  # True after any movement; cleared on next user speech
+        self._user_speech_during_current_response = False  # True if user started speaking during current bot response (used to suppress watchdog races)
         # Onboarding state machine — reset at the start of every session
         self._onboarding: dict = {
             "phase": "onboarding",    # "onboarding" | "tutoring"
@@ -965,6 +966,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     self.deps.movement_manager.set_listening(True)
                     self._movement_blocked_until_user_input = False
                     self._tutoring_verbal_retry_fired = False
+                    self._user_speech_during_current_response = True
                     logger.debug("User speech started")
 
                 if event.type == "input_audio_buffer.speech_stopped":
@@ -982,6 +984,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 if event.type == "response.created":
                     logger.debug("Response created")
                     self._movement_dispatched_this_response = False
+                    self._user_speech_during_current_response = False
                     self._response_active = True
                     # Watchdog: if response.done never arrives, force-clear the
                     # single-flight flag after 45s so queued response.creates
@@ -1068,9 +1071,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         elif (
                             _gp == "tutoring"
                             and _gtutor
+                            and _gcur != "tutor_basic"  # V2 control: no didactic verbal-retry — would inject KBD scaffolding
                             and self._movement_dispatched_this_response
                             and not self._tutoring_verbal_retry_fired
                             and self._post_onboarding_stage == "done"
+                            and not self._user_speech_during_current_response  # race fix: user is mid-turn, let their response.create answer
                         ):
                             logger.warning("Tutoring: movement without speech — forcing verbal follow-up")
                             try:
@@ -1294,7 +1299,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # that gpt-4o-transcribe hallucinates on silence/background noise.
                         if _is_tutor and ob["phase"] == "tutoring":
                             text = event.transcript.strip()
-                            if not _is_valid_onboarding_answer(text, 0):
+                            # Use the onboarding-shape validator only as a filler-rejection
+                            # signal. Crucially, override the "≤3 words + ?" rule that was
+                            # designed to drop counter-questions during onboarding — in
+                            # tutoring, short questions like "Was ist Grundlagenforschung?"
+                            # are exactly what we want to answer.
+                            _is_short_question = (
+                                len(text.split()) <= 3 and text.rstrip().endswith("?")
+                            )
+                            if not _is_short_question and not _is_valid_onboarding_answer(text, 0):
                                 logger.info("Tutoring phantom-filtered transcript %r — not responding", text)
                                 continue
                             # Stricter single-word noise filter for tutoring.
