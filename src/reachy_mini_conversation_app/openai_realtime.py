@@ -1336,21 +1336,21 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "Nach der Bewegung sprichst du nichts mehr — die Bewegung markiert das Ende deines Turns."
                             )
                             if _profile == "tutor_basic":
-                                # V2: onboarding items were deleted from context after Q7.
-                                # GPT-4o has no access to name/hobbies/etc. anymore, so no
-                                # active "forbidden" rules needed. Just a soft fallback in
-                                # case the student brings the name up themselves.
-                                # V2 per-turn intentionally MINIMAL.
-                                # The system prompt (instructions.txt) already enforces
-                                # neutrality, no-personalization, no-Sokratik, blacklist.
-                                # Repeating those per turn keeps the forbidden topics
-                                # (name/hobby/study) ACTIVE in the model's attention
-                                # every turn — the priming effect that broke the prior
-                                # implementation (see commit 285c856).
+                                # V2 per-turn instruction: POSITIV formuliert, NICHT als
+                                # Verbots-Liste. Verbots-Listen ("kein Lob, kein 'super'")
+                                # primen das Model auf genau diese Tokens — siehe 285c856.
+                                # Stattdessen: positives Verhalten beschreiben, was V2 SEIN
+                                # SOLL: eine generische KI-Suchantwort. System-Prompt trägt
+                                # Blacklist und No-Sokratik-Sektion separat.
                                 tutoring_instructions = (
                                     common_turn_rule + " "
-                                    "Du hast keine Vorinformationen über den Studierenden. "
-                                    "Adressiere mit 'Du'."
+                                    "Antworte wie eine generische KI-Suchantwort: "
+                                    "direkt, sachlich, in Aussagesätzen. "
+                                    "Liefere die angefragte Information unmittelbar. "
+                                    "Beende deine Antwort mit einem Punkt — "
+                                    "keine Gegenfrage, keine Rückversicherung, "
+                                    "keine Aufforderung an die Lernende oder den Lernenden. "
+                                    "Adressiere ausschließlich mit 'Du', nie mit Namen."
                                 )
                             elif _profile in V1_PROFILES:
                                 self._tutoring_turn_count += 1
