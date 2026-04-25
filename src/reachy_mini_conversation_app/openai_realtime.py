@@ -726,6 +726,20 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     "KEINE Umformulierung. KEIN Lob, keine Wärme, keine persönliche Anrede. "
                     "Stelle nur diese eine Frage."
                 )
+            elif q_num == 2:
+                # Q2 acks Q1 (the name). Allow "Freut mich, [Name]." once —
+                # makes the only personal opener a tiny bit warmer without
+                # re-introducing personalization later. Name is NOT used
+                # again for the rest of the V2 session.
+                instructions = (
+                    "Die/Der Studierende hat gerade den Namen genannt. "
+                    "Beginne mit GENAU einem kurzen Übergang: "
+                    "'Freut mich, [Name].' (Name wörtlich aus der Antwort) "
+                    "ODER neutral 'Alles klar.' / 'Okay.'. Sonst nichts Persönliches. "
+                    "KEIN Lob ('schön', 'super', 'spannend'), KEIN Kommentar zum Namen. "
+                    f"Stelle dann diese Frage, Wort für Wort:\n\n\"{question_text}\"\n\n"
+                    "Keine Umformulierung, keine zweite Frage. Sprich sachlich."
+                )
             else:
                 instructions = (
                     "Die/Der Studierende hat gerade geantwortet. "
@@ -1625,15 +1639,17 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 except asyncio.CancelledError:
                                     return
                                 try:
-                                    # Queue if a response is still active. drop_if_active
-                                    # was too aggressive — it dropped the legit
-                                    # response to a fresh user turn when the prior
-                                    # response's audio tail was still playing locally
-                                    # but the API's _response_active flag had a brief
-                                    # overlap. Substring/suffix dedup catches the rare
-                                    # duplicate that a queue-then-drain produces.
+                                    # drop_if_active=True: kill duplicate response.create
+                                    # for the same user turn. Without this, two responses
+                                    # are generated and concatenated in the user's audio
+                                    # ("X ist Y. ... X ist Y, nämlich ..."). Substring
+                                    # dedup does NOT catch these — the wording differs.
+                                    # Earlier revert (3f82ee7) blamed this for missing
+                                    # response after "Einsteiger"; the real cause was the
+                                    # B9 V2 wissensstand→done fall-through bug, now fixed.
                                     await self._safe_response_create(
                                         response=payload, label=label,
+                                        drop_if_active=True,
                                     )
                                 except Exception as e:
                                     logger.warning("Debounced tutoring fire failed: %s", e)
