@@ -757,19 +757,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 "Gehe ganz kurz auf die Antwort ein — EIN Satz, warm und spezifisch zu dem was tatsächlich gesagt wurde. "
                 "Kein leeres Lob, keine Floskel. "
                 "WICHTIG: Die Antwort wurde bereits validiert — akzeptiere sie IMMER als gültig. "
-                "Auch sehr kurze Ein-Wort-Antworten (z.B. 'Weltall', 'Sport', 'Mike', 'BWL') sind vollwertige Antworten. "
+                "Auch sehr kurze Ein-Wort-Antworten sind vollwertige Antworten. "
                 "Auch in Füllwörter/Abschweifungen/Versprecher eingebettete Infos sind gültig. "
-                "Extrahiere die Kerninformation und erwähne sie in deiner kurzen Reaktion. "
-                "Beispiele: "
-                "'Weltall.' → 'Weltall — ein faszinierendes Interessengebiet!' "
-                "'Trotzdem, mein Name ist Mike.' → 'Hallo Mike, freut mich!' "
-                "'Ich studiere nicht mehr, vor zwei Jahren Marketing abgeschlossen.' → 'Ah, Marketing-Background!' "
+                "Extrahiere die Kerninformation und erwähne sie in deiner kurzen Reaktion — "
+                "verwende ausschließlich die WÖRTER DES STUDENTEN, niemals Beispielwörter aus dieser Anweisung. "
                 "Sage NIEMALS 'Ich habe das nicht ganz verstanden' — wenn die Antwort hier ankommt, ist sie gültig. "
                 "\nABSOLUTE ANTI-HALLUZINATIONS-REGEL: "
                 "Wiederhole AUSSCHLIESSLICH Wörter, Zahlen, Fächer und Namen, die der Studierende TATSÄCHLICH GESAGT hat. "
-                "Wenn 'ersten Semester' gesagt wurde, sage NIE 'siebtes Semester'. "
-                "Wenn du eine Zahl oder ein Fach nicht ganz sicher gehört hast, lass sie WEG — "
-                "sage lieber 'Ah, Maschinenbau!' statt einer erfundenen Semester-Zahl. "
+                "Wenn eine konkrete Zahl/Bezeichnung gesagt wurde, übernimm sie wörtlich, niemals eine andere. "
+                "Wenn du eine Zahl oder ein Fach nicht ganz sicher gehört hast, lass sie WEG. "
                 "Ergänze NIE Antwortoptionen aus deiner vorigen Frage ('durch Fragen' etc.), die der Student gar nicht genannt hat. "
                 "Im Zweifel: weniger wiederholen. "
                 f"\nStelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
@@ -932,23 +928,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             # to leak. This is the connection AFTER Q7 reset.
             if _resume_to_tutoring and _cur_profile == "tutor_basic":
                 logger.info("V2 session-reset complete — firing Stage-1a deadline question")
-                try:
-                    self._response_active = True
-                    await conn.response.create(
-                        response={
-                            "instructions": (
-                                "Stelle GENAU EINE Frage, wörtlich: "
-                                "'Gibt es eine Deadline oder Abgabe zu diesem Thema, "
-                                "oder ist es ein freies Lernziel?' "
-                                "Keine Einleitung, keine zweite Frage. Sprich neutral und sachlich."
-                            ),
-                            "tool_choice": "none",
-                            "tools": [],
-                        }
-                    )
-                except Exception as e:
-                    self._response_active = False
-                    logger.warning("V2 resume Stage-1a fire failed: %s", e)
+                await self._safe_response_create(
+                    response={
+                        "instructions": (
+                            "Stelle GENAU EINE Frage, wörtlich: "
+                            "'Gibt es eine Deadline oder Abgabe zu diesem Thema, "
+                            "oder ist es ein freies Lernziel?' "
+                            "Keine Einleitung, keine zweite Frage. Sprich neutral und sachlich."
+                        ),
+                        "tool_choice": "none",
+                        "tools": [],
+                    },
+                    label="v2_resume_stage1a_deadline",
+                )
             async for event in self.connection:
                 logger.debug(f"OpenAI event: {event.type}")
                 if event.type == "input_audio_buffer.speech_started":
@@ -1205,6 +1197,36 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                             if ob["current_q"] > 7:
                                 # All 7 questions answered
+                                if _profile == "tutor_basic":
+                                    # V2: full session reset. conversation.item.delete
+                                    # does NOT erase from GPT-4o's working state — the
+                                    # only reliable way to forget name/study/hobbies is
+                                    # to drop the WebSocket and start a fresh session.
+                                    # Do NOT extract name/hobby/humor — those would
+                                    # populate self._lernprofil_* and could leak into
+                                    # any code path that reads them before the new
+                                    # session resets them at startup.
+                                    self._v2_resume_to_tutoring = True
+                                    logger.info("V2: forcing session reset to clear onboarding context")
+                                    # Cancel pending background tasks so the watchdog
+                                    # doesn't fire during Stage-1a in the new session.
+                                    if (
+                                        self._response_active_watchdog_task
+                                        and not self._response_active_watchdog_task.done()
+                                    ):
+                                        self._response_active_watchdog_task.cancel()
+                                    if (
+                                        self._tutoring_response_debounce_task
+                                        and not self._tutoring_response_debounce_task.done()
+                                    ):
+                                        self._tutoring_response_debounce_task.cancel()
+                                    try:
+                                        await self.connection.close()
+                                    except Exception as e:
+                                        logger.warning("V2 connection close failed: %s", e)
+                                    return  # exit event loop; outer retry loop reconnects
+
+                                # V1 only past this point: extract personalization data.
                                 self._lernprofil_name = _extract_name(ob["answers"].get(1, ""))
                                 self._lernprofil_hobbies = _extract_primary_hobby(ob["answers"].get(6, ""))
                                 _q6_lower = (ob["answers"].get(6, "") or "").lower()
@@ -1221,21 +1243,6 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     self._lernprofil_text = profile_text
                                     ob["profile_injected"] = True
                                     logger.info("V1 LERNPROFIL cached for per-turn injection (profile=%s)", _profile)
-                                if _profile == "tutor_basic":
-                                    # V2: full session reset. conversation.item.delete
-                                    # does NOT erase from GPT-4o's working state — the
-                                    # only reliable way to forget name/study/hobbies is
-                                    # to drop the WebSocket and start a fresh session.
-                                    # The retry loop in start_up will reconnect; the
-                                    # _v2_resume_to_tutoring flag tells the new session
-                                    # to skip onboarding and fire Stage-1a directly.
-                                    self._v2_resume_to_tutoring = True
-                                    logger.info("V2: forcing session reset to clear onboarding context")
-                                    try:
-                                        await self.connection.close()
-                                    except Exception as e:
-                                        logger.warning("V2 connection close failed: %s", e)
-                                    return  # exit event loop; outer retry loop reconnects
 
                                 ob["phase"] = "tutoring"
                                 # V1 only past this point.
