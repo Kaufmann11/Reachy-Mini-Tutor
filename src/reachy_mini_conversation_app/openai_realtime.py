@@ -729,12 +729,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             else:
                 instructions = (
                     "Die/Der Studierende hat gerade geantwortet. "
-                    "Beginne mit GENAU einem kurzen neutralen Übergang: "
-                    "'Alles klar.' oder 'Okay.'. "
-                    "KEINE Wiederholung der Antwort, KEIN Name, KEIN Lob "
-                    "('super', 'spannend', 'interessant', 'klasse', 'toll', 'freut mich'). "
+                    "Optional EIN kurzer neutraler Übergang (z.B. 'Alles klar.', 'Okay.', "
+                    "'Verstanden.', 'Gut.') ODER direkt zur nächsten Frage — variiere, "
+                    "wiederhole NICHT bei jeder Frage denselben Übergang. "
+                    "KEINE Wiederholung der Antwort, KEIN Name, KEIN Lob, "
                     "KEIN Kommentar zum Inhalt. "
-                    f"Stelle danach DIREKT diese Frage, Wort für Wort:\n\n\"{question_text}\"\n\n"
+                    f"Stelle dann diese Frage, Wort für Wort:\n\n\"{question_text}\"\n\n"
                     "Keine Umformulierung, keine zweite Frage. Sprich sachlich."
                 )
         elif q_num == 1:
@@ -1358,8 +1358,29 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 )
                                 continue
                             else:
-                                # V2: stage gathering done, fall through to normal tutoring.
+                                # V2: stage gathering done. Fire ONE explicit neutral
+                                # transition response and `continue` — do NOT fall through
+                                # into the per-turn tutoring branch (that path expects an
+                                # actual student question, not a stage-1b answer, and the
+                                # double response.create races OpenAI's single-flight
+                                # serialization → server error).
                                 self._post_onboarding_stage = "done"
+                                await self._safe_response_create(
+                                    response={
+                                        "instructions": (
+                                            "Antworte mit GENAU einem kurzen, neutralen Satz, "
+                                            "der die/den Studierenden zur ersten Frage einlädt — "
+                                            "z.B. 'Du kannst jetzt deine Frage stellen oder einen "
+                                            "Begriff nennen.' Keine Wiederholung der Antwort, "
+                                            "kein Lob, keine Lehre, keine Rückfrage. "
+                                            "Keine Bewegungs-Tools."
+                                        ),
+                                        "tool_choice": "none",
+                                        "tools": [],
+                                    },
+                                    label="post_onboarding_v2_done_invite",
+                                )
+                                continue
                         if (
                             _profile in V1_PROFILES
                             and ob["phase"] == "tutoring"
