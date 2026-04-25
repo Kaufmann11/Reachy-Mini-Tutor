@@ -973,6 +973,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             and _gtutor
                             and self._movement_dispatched_this_response
                             and not self._tutoring_verbal_retry_fired
+                            and self._post_onboarding_stage == "done"
                         ):
                             logger.warning("Tutoring: movement without speech — forcing verbal follow-up")
                             try:
@@ -1864,9 +1865,22 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # sends to the stream the stuff put in the output queue by the openai event handler
         # This is called periodically by the fastrtc Stream
 
-        # Handle idle
+        # Handle idle. NEVER fire idle_signal during onboarding or post-onboarding
+        # state machine — the movement-only response masks _response_audio_produced
+        # and trips the "no audio → re-ask" guardrail and the "movement without
+        # speech → forced verbal follow-up" watchdog, both of which destroy the
+        # post-Q7 stage flow (see test 2026-04-25).
+        _cur_profile_idle = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+        _is_tutor_idle = _cur_profile_idle in V1_PROFILES or _cur_profile_idle == "tutor_basic"
+        _idle_safe = (
+            not _is_tutor_idle
+            or (
+                self._onboarding.get("phase") == "tutoring"
+                and self._post_onboarding_stage == "done"
+            )
+        )
         idle_duration = asyncio.get_event_loop().time() - self.last_activity_time
-        if idle_duration > 15.0 and self.deps.movement_manager.is_idle():
+        if idle_duration > 15.0 and self.deps.movement_manager.is_idle() and _idle_safe:
             try:
                 await self.send_idle_signal(idle_duration)
             except Exception as e:
