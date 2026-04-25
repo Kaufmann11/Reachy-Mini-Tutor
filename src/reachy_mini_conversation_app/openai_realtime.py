@@ -1071,24 +1071,42 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         elif (
                             _gp == "tutoring"
                             and _gtutor
-                            and _gcur != "tutor_basic"  # V2 control: no didactic verbal-retry — would inject KBD scaffolding
                             and self._movement_dispatched_this_response
                             and not self._tutoring_verbal_retry_fired
                             and self._post_onboarding_stage == "done"
                             and not self._user_speech_during_current_response  # race fix: user is mid-turn, let their response.create answer
                         ):
-                            logger.warning("Tutoring: movement without speech — forcing verbal follow-up")
+                            logger.warning("Tutoring: movement without speech — forcing verbal follow-up (profile=%s)", _gcur)
                             try:
                                 self._tutoring_verbal_retry_fired = True
                                 self._response_create_issued = True
+                                # Profile-aware watchdog instruction. V2 (control) must
+                                # NOT receive a didactic/scaffolding instruction — that
+                                # path was the source of "Kein Stress", "wir schaffen
+                                # das", "Ich bin sicher du schaffst das" earlier. V2
+                                # gets a strictly factual, neutral re-fire.
+                                if _gcur == "tutor_basic":
+                                    _retry_instructions = (
+                                        "Die Bewegung allein reicht nicht. Liefere jetzt "
+                                        "die Antwort auf den letzten Beitrag des Studenten "
+                                        "— sachlich, in Aussagesätzen, kurz (1–3 Sätze). "
+                                        "Keine weitere Bewegung. Keine Lob-Floskeln "
+                                        "('super', 'kein Problem', 'kein Stress'). "
+                                        "Keine Verständnisfragen ('Klingt das verständlich?'). "
+                                        "Keine sokratischen Fragen ('Was denkst du?'). "
+                                        "Höchstens am Ende EINE Service-Rückfrage in der "
+                                        "Form 'Soll ich auf X eingehen?'."
+                                    )
+                                else:
+                                    _retry_instructions = (
+                                        "Die Bewegung allein reicht nicht. Reagiere jetzt auch SPRACHLICH "
+                                        "auf den letzten Beitrag des Studenten — mit Anerkennung, Scaffolding-Frage "
+                                        "oder der nächsten didaktischen Frage. KEINE weitere Bewegung in dieser Antwort. "
+                                        "Sprich kurz und klar (1–3 Sätze)."
+                                    )
                                 await self._safe_response_create(
                                     response={
-                                        "instructions": (
-                                            "Die Bewegung allein reicht nicht. Reagiere jetzt auch SPRACHLICH "
-                                            "auf den letzten Beitrag des Studenten — mit Anerkennung, Scaffolding-Frage "
-                                            "oder der nächsten didaktischen Frage. KEINE weitere Bewegung in dieser Antwort. "
-                                            "Sprich kurz und klar (1–3 Sätze)."
-                                        ),
+                                        "instructions": _retry_instructions,
                                         "tool_choice": "none",
                                         "tools": [],
                                     },
