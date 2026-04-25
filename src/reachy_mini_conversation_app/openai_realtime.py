@@ -1347,9 +1347,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "Antworte wie eine generische KI-Suchantwort: "
                                     "direkt, sachlich, in Aussagesätzen. "
                                     "Liefere die angefragte Information unmittelbar. "
-                                    "Beende deine Antwort mit einem Punkt — "
-                                    "keine Gegenfrage, keine Rückversicherung, "
-                                    "keine Aufforderung an die Lernende oder den Lernenden. "
+                                    "Eine Rückfrage am Ende ist erlaubt, aber nur "
+                                    "service-orientiert (z.B. 'Soll ich darauf näher "
+                                    "eingehen?'), niemals pädagogisch-sokratisch "
+                                    "(also keine Fragen, die die Lernende oder den "
+                                    "Lernenden zum Nachdenken anregen sollen, kein "
+                                    "'Was denkst du?', 'Bist du bereit?', 'Was hältst "
+                                    "du davon?'). "
                                     "Adressiere ausschließlich mit 'Du', nie mit Namen."
                                 )
                             elif _profile in V1_PROFILES:
