@@ -987,7 +987,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     self._user_speech_during_current_response = False
                     self._response_active = True
                     # Watchdog: if response.done never arrives, force-clear the
-                    # single-flight flag after 45s so queued response.creates
+                    # single-flight flag after 20s so queued response.creates
                     # can drain. Prevents end-of-session freeze.
                     if (
                         self._response_active_watchdog_task
@@ -997,13 +997,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
                     async def _stale_active_watchdog() -> None:
                         try:
-                            await asyncio.sleep(45.0)
+                            await asyncio.sleep(20.0)
                         except asyncio.CancelledError:
                             return
                         if self._response_active:
                             logger.warning(
                                 "Stale _response_active watchdog fired — "
-                                "no response.done in 45s. Forcing flag clear "
+                                "no response.done in 20s. Forcing flag clear "
                                 "and draining queue (depth=%d).",
                                 len(self._pending_response_creates),
                             )
