@@ -729,12 +729,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             else:
                 instructions = (
                     "Die/Der Studierende hat gerade geantwortet. "
-                    "KEINE Bestätigung, KEINE Wiederholung der Antwort, KEIN Lob, "
-                    "KEIN 'verstanden', KEIN 'notiert', KEIN 'danke', KEIN 'freut mich'. "
-                    "Stelle einfach DIREKT die nächste Frage, Wort für Wort, ohne Einleitung:"
-                    f"\n\n\"{question_text}\"\n\n"
-                    "Keine Umformulierung, keine zweite Frage. "
-                    "Sprich neutral und sachlich wie eine generische KI."
+                    "Beginne mit GENAU einem kurzen neutralen Übergang: "
+                    "'Alles klar.' oder 'Okay.'. "
+                    "KEINE Wiederholung der Antwort, KEIN Name, KEIN Lob "
+                    "('super', 'spannend', 'interessant', 'klasse', 'toll', 'freut mich'). "
+                    "KEIN Kommentar zum Inhalt. "
+                    f"Stelle danach DIREKT diese Frage, Wort für Wort:\n\n\"{question_text}\"\n\n"
+                    "Keine Umformulierung, keine zweite Frage. Sprich sachlich."
                 )
         elif q_num == 1:
             instructions = (
@@ -1391,16 +1392,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # Blacklist und No-Sokratik-Sektion separat.
                                 tutoring_instructions = (
                                     common_turn_rule + " "
-                                    "Antworte wie eine generische KI-Suchantwort: "
-                                    "direkt, sachlich, in Aussagesätzen. "
-                                    "Liefere die angefragte Information unmittelbar. "
-                                    "Eine Rückfrage am Ende ist erlaubt, aber nur "
-                                    "service-orientiert (z.B. 'Soll ich darauf näher "
-                                    "eingehen?'), niemals pädagogisch-sokratisch "
-                                    "(also keine Fragen, die die Lernende oder den "
-                                    "Lernenden zum Nachdenken anregen sollen, kein "
-                                    "'Was denkst du?', 'Bist du bereit?', 'Was hältst "
-                                    "du davon?'). "
+                                    "Du bist eine generische Informations-KI. "
+                                    "Liefere die angefragte Information direkt, in "
+                                    "Aussagesätzen, dann Punkt, dann STOPP. "
+                                    "Beispiel-Stil: 'X ist Y. Z gehört auch dazu, weil ...' "
+                                    "— danach Punkt, fertig. "
+                                    "Verständnisfragen sind verboten ('Klingt das "
+                                    "verständlich?', 'Hast du das verstanden?', "
+                                    "'Möchtest du mehr Details?'). Sokratische "
+                                    "Fragen sind verboten ('Was denkst du?', "
+                                    "'Erzähl mir, was...', 'Bist du bereit?'). "
+                                    "Erlaubt ist höchstens EINE service-orientierte "
+                                    "Rückfrage am Ende, in der Form 'Soll ich auf X "
+                                    "eingehen?'. "
                                     "Adressiere ausschließlich mit 'Du', nie mit Namen."
                                 )
                             elif _profile in V1_PROFILES:
