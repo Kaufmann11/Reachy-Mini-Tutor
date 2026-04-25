@@ -1158,24 +1158,16 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 self._post_onboarding_stage = "awaiting_deadline"
                                 logger.info("Onboarding complete → tutoring (profile=%s)", _profile)
 
-                                _stage1_antileak = (
-                                    "ANTI-LEAK (HÖCHSTE PRIORITÄT): "
-                                    "KEIN Name in der Anrede oder im Satz. KEINE Hobby-Rückbezüge. "
-                                    "KEINE Bezugnahme auf das Onboarding ('wie du gesagt hast', "
-                                    "'du hast erwähnt', 'aus deinen Antworten'). "
-                                    "STRIKT VERBOTENE Eröffnungen — auch nicht sinngemäß: "
-                                    "'Klar, [Name]', 'Schön, dich kennenzulernen', 'Hallo [Name]', "
-                                    "'super, dass', 'toll, dass', 'spannend, dass'. "
-                                    "Beginne NEUTRAL und SACHLICH. "
-                                    "Sprich den Studierenden NUR mit 'Du' an, NIEMALS mit Namen. "
-                                    "KEIN Lob, KEINE Aufmunterung. "
-                                    if _profile == "tutor_basic" else ""
-                                )
+                                # No anti-leak prefix here for V2: the system prompt
+                                # (instructions.txt) already enforces no-personalization.
+                                # Repeating "kein Name / kein Lob" per turn keeps those
+                                # exact tokens active in the model's working memory —
+                                # the priming effect that broke the V2 forget-flow
+                                # in commit 285c856.
                                 await self._safe_response_create(
                                     response={
                                         "instructions": (
                                             "Das Onboarding ist abgeschlossen. "
-                                            + _stage1_antileak +
                                             "Stelle jetzt GENAU EINE Frage, wörtlich: "
                                             "'Gibt es eine Deadline oder Abgabe zu diesem Thema, oder ist es ein freies Lernziel?' "
                                             "Stelle KEINE zweite Frage in dieser Antwort. Lehre noch NICHT. "
@@ -1230,15 +1222,10 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 self._deadline_flag, self._mc_flag, _profile, _ctx_lower[:100],
                             )
                             self._post_onboarding_stage = "awaiting_wissensstand"
-                            _stage1b_antileak = (
-                                "ANTI-LEAK: KEIN Name. KEIN Lob. KEIN 'super', 'klasse', 'toll'. "
-                                "Sprich neutral und sachlich. "
-                                if _profile == "tutor_basic" else ""
-                            )
+                            # No anti-leak prefix — see comment at stage1a.
                             await self._safe_response_create(
                                 response={
                                     "instructions": (
-                                        _stage1b_antileak +
                                         "Stelle jetzt GENAU EINE Frage, wörtlich: "
                                         "'Wie würdest du deinen aktuellen Wissensstand zu diesem Thema einschätzen — Einsteiger, Grundkenntnisse, oder schon fortgeschritten?' "
                                         "Keine Vor-Erklärung, keine zweite Frage, kein Lehren. "
@@ -1321,42 +1308,17 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # GPT-4o has no access to name/hobbies/etc. anymore, so no
                                 # active "forbidden" rules needed. Just a soft fallback in
                                 # case the student brings the name up themselves.
+                                # V2 per-turn intentionally MINIMAL.
+                                # The system prompt (instructions.txt) already enforces
+                                # neutrality, no-personalization, no-Sokratik, blacklist.
+                                # Repeating those per turn keeps the forbidden topics
+                                # (name/hobby/study) ACTIVE in the model's attention
+                                # every turn — the priming effect that broke the prior
+                                # implementation (see commit 285c856).
                                 tutoring_instructions = (
                                     common_turn_rule + " "
-                                    "Du hast keine Vorinformationen über den Studierenden — "
-                                    "adressiere konsequent mit 'Du', NIEMALS mit einem Namen. "
-                                    "ANTI-LEAK (HÖCHSTE PRIORITÄT): SELBST WENN du in deinem Kontext "
-                                    "irgendwo Details über den Studierenden (Name, Hobbys, Studium, "
-                                    "Motivation, Lernstil, Humor-Präferenz) zu sehen oder zu erinnern "
-                                    "scheinst — ERWÄHNE SIE NIE. Nutze NIE den Namen. Nutze NIE ein Hobby "
-                                    "als Analogie. Sage NIE 'du hattest erwähnt, dass...'. Jeder Turn ist "
-                                    "ein Kaltstart. Wenn der Studierende fragt 'weißt du noch X?' oder "
-                                    "'wie heiße ich?' → antworte EXAKT: 'Ich habe keine Informationen "
-                                    "über dich gespeichert.' STOPPE danach, KEIN 'aber du hattest gesagt', "
-                                    "KEIN 'du heißt X', KEINE Details. "
-                                    "KEINE KAMERA: In dieser Session hast du keinen Kamerazugriff. "
-                                    "Sag NIE 'ich sehe', 'halt die Folie vor die Kamera', 'zeig mir', "
-                                    "'ich schaue mir das an'. Der Student KANN dir keine Folie zeigen — "
-                                    "er kann dir den Inhalt nur VORLESEN oder BESCHREIBEN. "
-                                    "Wenn der Student eine Folie vor sich hat, bitte ihn, den Text oder "
-                                    "die Kernpunkte der Folie vorzulesen. "
-                                    "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's', 'lass uns starten', "
-                                    "'dann legen wir los' ohne im selben Turn direkt den ersten Inhalt "
-                                    "zu liefern. "
-                                    "NEUTRALER TON (HARTE BLACKLIST): Die folgenden Phrasen sind "
-                                    "STRIKT VERBOTEN — niemals benutzen, auch nicht sinngemäß: "
-                                    "'Super', 'Klasse', 'Toll', 'Prima', 'gut gemacht', 'kein Problem', "
-                                    "'du machst das gut', 'du hast das super erkannt', 'guter Start', "
-                                    "'interessante Überlegung', 'spannende Frage'. "
-                                    "KEINE SOKRATIK: Die folgenden Sokratik-Einleitungen sind ebenfalls "
-                                    "STRIKT VERBOTEN: 'erkläre mir in deinen eigenen Worten', "
-                                    "'was denkst du darüber', 'stell dir vor', 'was glaubst du', "
-                                    "'überlege mal'. Du stellst keine Scaffolding-Fragen zurück an den "
-                                    "Studierenden. Wenn er nach einer Erklärung fragt, erklärst du "
-                                    "direkt. Wenn er etwas falsch sagt, korrigierst du sachlich: "
-                                    "'Nein, korrekt ist X.' — ohne Aufmunterung. "
-                                    "Bleib sachlich wie eine generische KI-Suchantwort. Bestätigungen "
-                                    "höchstens mit 'Richtig.' / 'Das stimmt.' ohne Ermutigung."
+                                    "Du hast keine Vorinformationen über den Studierenden. "
+                                    "Adressiere mit 'Du'."
                                 )
                             elif _profile in V1_PROFILES:
                                 self._tutoring_turn_count += 1
