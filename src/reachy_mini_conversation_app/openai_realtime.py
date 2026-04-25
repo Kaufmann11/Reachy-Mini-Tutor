@@ -673,8 +673,40 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         if not self.connection:
             return
         question_text = _ONBOARDING_Q_INSTRUCTIONS[q_num]
+        _cur_profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+        _is_v2 = _cur_profile == "tutor_basic"
 
-        if q_num == 1:
+        if _is_v2:
+            # V2 control condition: NEVER address by name, NEVER comment on
+            # the previous answer, NEVER praise. The whole point is to
+            # produce no personalization activations the model could leak
+            # later. Just acknowledge neutrally and ask the next question.
+            if q_num == 1:
+                instructions = (
+                    "Die/Der Studierende hat gerade die Unterhaltung begonnen. "
+                    f"Stelle jetzt GENAU diese Frage, Wort für Wort:\n\n\"{question_text}\"\n\n"
+                    "Sprich neutral und sachlich. KEINE persönliche Anrede. "
+                    "Stelle nur diese eine Frage."
+                )
+            elif reask:
+                instructions = (
+                    "Die/Der Studierende hat nicht klar geantwortet. "
+                    f"Stelle die gleiche Frage neutral nochmal, Wort für Wort:\n\n\"{question_text}\"\n\n"
+                    "KEINE Umformulierung. KEIN Lob, keine Wärme, keine persönliche Anrede. "
+                    "Stelle nur diese eine Frage."
+                )
+            else:
+                instructions = (
+                    "Die/Der Studierende hat gerade geantwortet. "
+                    "Bestätige NEUTRAL mit GENAU einem Wort: 'Verstanden.' oder 'Notiert.'. "
+                    "KEINE Wiederholung der Antwort. KEIN Name, KEINE Anrede mit Namen. "
+                    "KEIN Lob ('super', 'spannend', 'interessant', 'klasse', 'toll'). "
+                    "KEIN Kommentar zum Inhalt der Antwort. KEIN 'freut mich', kein 'danke'. "
+                    f"\nStelle danach GENAU diese Frage, Wort für Wort:\n\n\"{question_text}\"\n\n"
+                    "KEINE Umformulierung, keine Aufzählung, keine zweite Frage. "
+                    "Sprich neutral und sachlich wie eine generische KI-Suchantwort."
+                )
+        elif q_num == 1:
             instructions = (
                 "Die/Der Studierende hat gerade die Unterhaltung begonnen (z.B. mit 'Hallo'). "
                 f"Stelle jetzt GENAU diese Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
