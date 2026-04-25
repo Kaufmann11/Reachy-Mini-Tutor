@@ -1548,17 +1548,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 except asyncio.CancelledError:
                                     return
                                 try:
-                                    # drop_if_active=True: if a response is still
-                                    # being generated when the debounce fires (e.g.
-                                    # the previous tutoring turn), don't queue a
-                                    # second one — the user's latest transcript is
-                                    # already in the conversation context. Pre
-                                    # race-guard fix this was the API's default
-                                    # behavior (silent reject); we restore it for
-                                    # tutoring turns specifically to kill duplicates.
+                                    # Queue if a response is still active. drop_if_active
+                                    # was too aggressive — it dropped the legit
+                                    # response to a fresh user turn when the prior
+                                    # response's audio tail was still playing locally
+                                    # but the API's _response_active flag had a brief
+                                    # overlap. Substring/suffix dedup catches the rare
+                                    # duplicate that a queue-then-drain produces.
                                     await self._safe_response_create(
                                         response=payload, label=label,
-                                        drop_if_active=True,
                                     )
                                 except Exception as e:
                                     logger.warning("Debounced tutoring fire failed: %s", e)
