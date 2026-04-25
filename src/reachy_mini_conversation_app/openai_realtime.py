@@ -387,6 +387,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._einsteiger_flag: bool = False  # student described self as Einsteiger/beginner
         self._deadline_flag: bool = False    # student mentioned deadline/Prüfung/MC
         self._mc_flag: bool = False          # multiple-choice specifically
+        # V2 session-reset: conversation.item.delete does NOT reliably clear
+        # GPT-4o's working state — name/study/hobbies leak into tutoring even
+        # after deletion. Only a full WebSocket reconnect fully erases context.
+        # When this flag is set, the next _run_realtime_session iteration will
+        # skip onboarding and resume directly at Stage-1a (deadline question).
+        self._v2_resume_to_tutoring: bool = False
         # --- Single-flight guard for response.create ---
         # The Realtime API serializes responses; a second response.create while one
         # is still active is rejected with conversation_already_has_active_response.
@@ -529,13 +535,37 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self.client = AsyncOpenAI(api_key=openai_api_key)
 
         max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 await self._run_realtime_session()
-                # Normal exit from the session, stop retrying
+                # Normal exit. If V2 session-reset was requested, immediately
+                # reconnect (no backoff, no attempt counter increment beyond
+                # this iteration — it's an intentional reset, not a failure).
+                if self._v2_resume_to_tutoring:
+                    logger.info("V2 session-reset requested — reconnecting immediately")
+                    self.connection = None
+                    try:
+                        self._connected_event.clear()
+                    except Exception:
+                        pass
+                    attempt = 0  # don't count intentional resets against retry budget
+                    continue
                 return
             except ConnectionClosedError as e:
                 # Abrupt close (e.g., "no close frame received or sent") → retry
+                if self._v2_resume_to_tutoring:
+                    # The close was triggered by our V2 reset path — reconnect
+                    # directly, do not count as a failure.
+                    logger.info("V2 session-reset (via close-exception) — reconnecting immediately")
+                    self.connection = None
+                    try:
+                        self._connected_event.clear()
+                    except Exception:
+                        pass
+                    attempt = 0
+                    continue
                 logger.warning("Realtime websocket closed unexpectedly (attempt %d/%d): %s", attempt, max_attempts, e)
                 if attempt < max_attempts:
                     # exponential backoff with jitter
@@ -547,12 +577,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     continue
                 raise
             finally:
-                # never keep a stale reference
-                self.connection = None
-                try:
-                    self._connected_event.clear()
-                except Exception:
-                    pass
+                # never keep a stale reference (when actually exiting)
+                if not self._v2_resume_to_tutoring:
+                    self.connection = None
+                    try:
+                        self._connected_event.clear()
+                    except Exception:
+                        pass
 
     async def _restart_session(self) -> None:
         """Force-close the current session and start a fresh one in background.
@@ -698,13 +729,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
             else:
                 instructions = (
                     "Die/Der Studierende hat gerade geantwortet. "
-                    "Bestätige NEUTRAL mit GENAU einem Wort: 'Verstanden.' oder 'Notiert.'. "
-                    "KEINE Wiederholung der Antwort. KEIN Name, KEINE Anrede mit Namen. "
-                    "KEIN Lob ('super', 'spannend', 'interessant', 'klasse', 'toll'). "
-                    "KEIN Kommentar zum Inhalt der Antwort. KEIN 'freut mich', kein 'danke'. "
-                    f"\nStelle danach GENAU diese Frage, Wort für Wort:\n\n\"{question_text}\"\n\n"
-                    "KEINE Umformulierung, keine Aufzählung, keine zweite Frage. "
-                    "Sprich neutral und sachlich wie eine generische KI-Suchantwort."
+                    "KEINE Bestätigung, KEINE Wiederholung der Antwort, KEIN Lob, "
+                    "KEIN 'verstanden', KEIN 'notiert', KEIN 'danke', KEIN 'freut mich'. "
+                    "Stelle einfach DIREKT die nächste Frage, Wort für Wort, ohne Einleitung:"
+                    f"\n\n\"{question_text}\"\n\n"
+                    "Keine Umformulierung, keine zweite Frage. "
+                    "Sprich neutral und sachlich wie eine generische KI."
                 )
         elif q_num == 1:
             instructions = (
@@ -772,10 +802,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""
+        # V2 session-reset path: when this flag is True, we are resuming
+        # AFTER Q7 with a fresh WebSocket so onboarding context is gone.
+        # Skip onboarding init entirely and go straight to Stage-1a.
+        _resume_to_tutoring = self._v2_resume_to_tutoring
+        self._v2_resume_to_tutoring = False
         # Reset per-session state so restarts start clean
         self._onboarding = {
-            "phase": "onboarding",
-            "current_q": 0,
+            "phase": "tutoring" if _resume_to_tutoring else "onboarding",
+            "current_q": 8 if _resume_to_tutoring else 0,
             "answers": {},
             "profile_injected": False,
         }
@@ -791,7 +826,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._lernprofil_hobbies = ""
         self._humor_welcomed = False
         self._chosen_method = ""
-        self._post_onboarding_stage = ""
+        self._post_onboarding_stage = "awaiting_deadline" if _resume_to_tutoring else ""
         self._tutoring_turn_count = 0
         self._last_name_used_turn = -99
         self._document_uploaded = False
@@ -890,6 +925,29 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 self._connected_event.set()
             except Exception:
                 pass
+
+            # V2 resume: fire Stage-1a (deadline question) directly into the
+            # fresh session. Onboarding context is gone — model has nothing
+            # to leak. This is the connection AFTER Q7 reset.
+            if _resume_to_tutoring and _cur_profile == "tutor_basic":
+                logger.info("V2 session-reset complete — firing Stage-1a deadline question")
+                try:
+                    self._response_active = True
+                    await conn.response.create(
+                        response={
+                            "instructions": (
+                                "Stelle GENAU EINE Frage, wörtlich: "
+                                "'Gibt es eine Deadline oder Abgabe zu diesem Thema, "
+                                "oder ist es ein freies Lernziel?' "
+                                "Keine Einleitung, keine zweite Frage. Sprich neutral und sachlich."
+                            ),
+                            "tool_choice": "none",
+                            "tools": [],
+                        }
+                    )
+                except Exception as e:
+                    self._response_active = False
+                    logger.warning("V2 resume Stage-1a fire failed: %s", e)
             async for event in self.connection:
                 logger.debug(f"OpenAI event: {event.type}")
                 if event.type == "input_audio_buffer.speech_started":
@@ -1162,40 +1220,29 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     self._lernprofil_text = profile_text
                                     ob["profile_injected"] = True
                                     logger.info("V1 LERNPROFIL cached for per-turn injection (profile=%s)", _profile)
-                                elif _profile == "tutor_basic":
-                                    # V2: erase onboarding context so GPT-4o literally
-                                    # cannot pattern-match on name/hobby/study. No profile
-                                    # is injected back — V2 is the control condition.
-                                    # Small settle delay so any in-flight item-created
-                                    # events land in our tracking list before we delete.
-                                    await asyncio.sleep(0.3)
-                                    deleted = 0
-                                    failed = 0
-                                    for iid in self._onboarding_item_ids:
-                                        try:
-                                            await self.connection.conversation.item.delete(item_id=iid)
-                                            deleted += 1
-                                        except Exception as e:
-                                            failed += 1
-                                            logger.warning("V2 item delete %s failed: %s", iid, e)
-                                    logger.info(
-                                        "V2: deleted %d/%d onboarding items (%d failed)",
-                                        deleted, len(self._onboarding_item_ids), failed,
-                                    )
+                                if _profile == "tutor_basic":
+                                    # V2: full session reset. conversation.item.delete
+                                    # does NOT erase from GPT-4o's working state — the
+                                    # only reliable way to forget name/study/hobbies is
+                                    # to drop the WebSocket and start a fresh session.
+                                    # The retry loop in start_up will reconnect; the
+                                    # _v2_resume_to_tutoring flag tells the new session
+                                    # to skip onboarding and fire Stage-1a directly.
+                                    self._v2_resume_to_tutoring = True
+                                    logger.info("V2: forcing session reset to clear onboarding context")
+                                    try:
+                                        await self.connection.close()
+                                    except Exception as e:
+                                        logger.warning("V2 connection close failed: %s", e)
+                                    return  # exit event loop; outer retry loop reconnects
 
                                 ob["phase"] = "tutoring"
+                                # V1 only past this point.
                                 # State machine: Stage-1a (deadline) → Stage-1b (Wissensstand) →
-                                # V1 Stage-2 (method) → done. Each as its own response.create
-                                # so the model can't bundle questions and silently skip one.
+                                # V1 Stage-2 (method) → done.
                                 self._post_onboarding_stage = "awaiting_deadline"
                                 logger.info("Onboarding complete → tutoring (profile=%s)", _profile)
 
-                                # No anti-leak prefix here for V2: the system prompt
-                                # (instructions.txt) already enforces no-personalization.
-                                # Repeating "kein Name / kein Lob" per turn keeps those
-                                # exact tokens active in the model's working memory —
-                                # the priming effect that broke the V2 forget-flow
-                                # in commit 285c856.
                                 await self._safe_response_create(
                                     response={
                                         "instructions": (
