@@ -1581,25 +1581,31 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # Nur aktiv wenn Q6 humor_welcomed positiv war.
                                 if self._humor_welcomed and self._tutoring_turn_count in (3, 7, 11):
                                     lines.append(
-                                        "HUMOR-MOMENT (JETZT spürbar einbauen): Der Student hat in Q6 "
-                                        "Humor ausdrücklich begrüßt. Baue in diese Antwort EINEN konkreten "
-                                        "humoristischen Baustein ein, sodass der Student es als Humor erkennt — "
-                                        "z.B. einen augenzwinkernden Vergleich ('klingt komplizierter als es ist — "
-                                        "ungefähr wie die Abseitsregel'), eine kleine selbstironische Bemerkung "
-                                        "('mein persönliches Lieblings-Chaos'), oder eine trockene Pointe "
-                                        "('ja, Statistiker hatten auch mal Spaß — angeblich'). "
-                                        "EIN Humor-Element, nicht mehr, und nur falls es inhaltlich natürlich "
-                                        "andockt. Danach sofort zurück zur Didaktik. Kein albernes Dauerfeuer."
+                                        "HUMOR-MOMENT (PFLICHT in dieser Antwort): Der Student hat in Q6 "
+                                        "Humor ausdrücklich begrüßt. Du MUSST in dieser Antwort EINEN konkreten "
+                                        "humoristischen Baustein einbauen, sodass der Student es als Humor "
+                                        "erkennt — z.B. einen augenzwinkernden Vergleich ('klingt komplizierter "
+                                        "als es ist — ungefähr wie die Abseitsregel'), eine leicht selbstironische "
+                                        "Bemerkung ('mein persönliches Lieblings-Chaos'), oder eine trockene Pointe "
+                                        "('ja, Statistiker hatten auch mal Spaß — angeblich'). EIN Humor-Element, "
+                                        "nicht mehr. Wähle es so, dass es inhaltlich andockt. Eine Antwort an diesem "
+                                        "Turn ohne erkennbaren Humor-Baustein gilt als unvollständig. "
+                                        "Danach sofort zurück zur Didaktik. Kein albernes Dauerfeuer."
                                     )
                                 # 2bb) STUDIUM-BRÜCKE — sporadisch (Turns 4, 8) Bezug zum
                                 # Studienfach herstellen, wenn das Konzept dazu passt. Nur Anker,
                                 # keine Pflicht — soll nicht erzwungen wirken.
                                 if self._lernprofil_study and self._tutoring_turn_count in (4, 8):
                                     lines.append(
-                                        f"STUDIUM-BRÜCKE (wenn passend): Der Student studiert '{self._lernprofil_study}'. "
-                                        f"Wenn das aktuelle Konzept einen natürlichen Bezug zum Studienfach hat, "
-                                        f"baue EINEN kurzen Bezug ein (z.B. 'in deinem Bereich begegnet dir das oft als…'). "
-                                        f"Wenn der Bezug erzwungen wirken würde, weglassen."
+                                        f"STUDIUM-BRÜCKE (PFLICHT in dieser Antwort): Der Student studiert "
+                                        f"'{self._lernprofil_study}'. Du MUSST in dieser Antwort EINEN konkreten Bezug "
+                                        f"zum Studienfach einbauen — als kurze Brücke (1 Satz), entweder über ein "
+                                        f"Beispiel aus dem Studienkontext ('In '{self._lernprofil_study}' begegnet "
+                                        f"dir das z.B. wenn …'), eine Methoden-Brücke ('Im Studium hast du das "
+                                        f"vermutlich schon mal gesehen als …'), oder einen Praxis-Bezug ('In deinem "
+                                        f"Bereich nutzt man dafür typischerweise …'). Eine Antwort an diesem Turn "
+                                        f"ohne erkennbaren Studium-Bezug gilt als unvollständig. Wähle die "
+                                        f"natürlichste der drei Brücken-Formen — keine erzwungene Verkleidung."
                                     )
                                 # 2c) CHOSEN METHOD — inject the student's chosen learning approach.
                                 if self._chosen_method:
@@ -1661,7 +1667,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         "Ziel: der Student findet die Antwort selbst, fühlt sich nicht bloßgestellt."
                                     )
                                 lines.append(
-                                    "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept, schließe mit EINER Check-Frage. Nach User-Antwort direkt nächstes Konzept. KEINE 3. Folge-Frage zum selben Punkt."
+                                    "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept und schließe DEFAULT mit EINER Check- oder Vertiefungs-Frage zum aktuellen Konzept. "
+                                    "Der Student soll NICHT selbst um Fragen bitten müssen — du stellst sie aktiv. "
+                                    "Ausnahme (keine Frage): wenn der Student gerade nur eine reine Klärung / ein zweites Beispiel / eine Inhaltsangabe angefordert hat, ODER wenn er gerade selbst die nächste Folie/Frage steuert. Sonst: IMMER eine Rück-Frage. "
+                                    "QUALITÄT der Frage: konzept-bezogen und konkret, nicht meinungs-/präferenzbasiert. "
+                                    "Gut: 'Was ist der Hauptunterschied zwischen Vorhersage- und Erklärungs-Theorie?', 'Welche zwei Eigenschaften haben wir gerade besprochen?', 'Wie würdest du das in eigenen Worten zusammenfassen?'. "
+                                    "Schwach (vermeiden, wenn fachliche Frage möglich ist): 'Welcher Aspekt ist dir wichtig?', 'Was hältst du davon?', 'In welchem Bereich würdest du forschen wollen?'. "
+                                    "KEINE 3. Folge-Frage zum selben Punkt."
                                 )
                                 lines.extend([
                                     "KEINE KAMERA: Sag nie 'ich sehe'. Für Folien nur rag_tool.",
