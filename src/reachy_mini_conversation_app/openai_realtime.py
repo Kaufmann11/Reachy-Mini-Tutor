@@ -372,6 +372,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._lernprofil_text: str = ""  # Cached LERNPROFIL for per-turn V1 re-injection
         self._lernprofil_name: str = ""  # Extracted student name from Q1
         self._lernprofil_hobbies: str = ""  # Extracted hobbies/interests from Q6
+        self._lernprofil_study: str = ""  # Extracted study program from Q2 (V1 background bridge)
         self._humor_welcomed: bool = False  # Parsed from Q6 — drives periodic humor mandate
         self._chosen_method: str = ""  # Post-onboarding learning approach (slide/overview/exercise)
         self._post_onboarding_stage: str = ""  # "" | "awaiting_deadline" | "awaiting_wissensstand" | "awaiting_method" | "done"
@@ -836,6 +837,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._lernprofil_text = ""
         self._lernprofil_name = ""
         self._lernprofil_hobbies = ""
+        self._lernprofil_study = ""
         self._humor_welcomed = False
         self._chosen_method = ""
         self._post_onboarding_stage = "awaiting_deadline" if _resume_to_tutoring else ""
@@ -1266,6 +1268,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # V1 only past this point: extract personalization data.
                                 self._lernprofil_name = _extract_name(ob["answers"].get(1, ""))
                                 self._lernprofil_hobbies = _extract_primary_hobby(ob["answers"].get(6, ""))
+                                # Q2 study program — light cleanup, used as background bridge.
+                                _q2_raw = (ob["answers"].get(2, "") or "").strip().rstrip(".!?,;:")
+                                self._lernprofil_study = _q2_raw[:80] if _q2_raw else ""
                                 _q6_lower = (ob["answers"].get(6, "") or "").lower()
                                 self._humor_welcomed = any(
                                     kw in _q6_lower
@@ -1586,12 +1591,42 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         "EIN Humor-Element, nicht mehr, und nur falls es inhaltlich natürlich "
                                         "andockt. Danach sofort zurück zur Didaktik. Kein albernes Dauerfeuer."
                                     )
+                                # 2bb) STUDIUM-BRÜCKE — sporadisch (Turns 4, 8) Bezug zum
+                                # Studienfach herstellen, wenn das Konzept dazu passt. Nur Anker,
+                                # keine Pflicht — soll nicht erzwungen wirken.
+                                if self._lernprofil_study and self._tutoring_turn_count in (4, 8):
+                                    lines.append(
+                                        f"STUDIUM-BRÜCKE (wenn passend): Der Student studiert '{self._lernprofil_study}'. "
+                                        f"Wenn das aktuelle Konzept einen natürlichen Bezug zum Studienfach hat, "
+                                        f"baue EINEN kurzen Bezug ein (z.B. 'in deinem Bereich begegnet dir das oft als…'). "
+                                        f"Wenn der Bezug erzwungen wirken würde, weglassen."
+                                    )
                                 # 2c) CHOSEN METHOD — inject the student's chosen learning approach.
                                 if self._chosen_method:
+                                    method_entry_hint = ""
+                                    # Method-entry adherence (Pending #3): nur in den ersten Tutoring-Turns
+                                    # die Methode konkretisieren, danach reicht das allgemeine Mandate.
+                                    if self._tutoring_turn_count <= 2:
+                                        if self._chosen_method == "Folie-für-Folie":
+                                            method_entry_hint = (
+                                                " METHODEN-EINSTIEG: Öffne die aktuelle Folie / das aktuelle Konzept "
+                                                "mit 2–3 Sätzen Kerninhalt (kurze Erklärung), DANACH erst EINE Check-Frage. "
+                                                "Nicht mit einer reinen Sokratik-Frage starten."
+                                            )
+                                        elif self._chosen_method == "Überblick zuerst":
+                                            method_entry_hint = (
+                                                " METHODEN-EINSTIEG: Liefere zuerst einen kurzen Meta-Überblick "
+                                                "(2–3 Sätze, was kommt insgesamt), bevor du in einzelne Details gehst."
+                                            )
+                                        elif self._chosen_method == "Übungsfragen":
+                                            method_entry_hint = (
+                                                " METHODEN-EINSTIEG: Starte direkt mit einer konkreten Übungs-/Verständnisfrage "
+                                                "zum aktuellen Stoff, nicht mit einer Erklärung."
+                                            )
                                     lines.append(
                                         f"GEWÄHLTE METHODE: '{self._chosen_method}'. Halte dich strikt daran. "
                                         f"Kein eigenmächtiger Wechsel der Vorgehensweise. Nur wenn der Student selbst "
-                                        f"eine andere Methode wünscht, wechselst du."
+                                        f"eine andere Methode wünscht, wechselst du.{method_entry_hint}"
                                     )
                                 # 3) RAG — only when doc uploaded.
                                 if self._document_uploaded:
@@ -1608,7 +1643,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 _wa_name_hint = f" Ansprache mit Namen '{_wa_name}'." if _wa_name else ""
                                 lines.extend([
                                     "ANKÜNDIGEN = LIEFERN: Sag NIE 'los geht's' / 'wir gehen durch' / 'lass uns anschauen' ohne im selben Satz direkt zu liefern.",
-                                    "RICHTIGE ANTWORT WÜRDIGEN: Wenn die Antwort des Studenten sachlich korrekt ist, benenne KONKRET den erkannten Punkt. Variiere das Anerkennungs-Wording JEDES Mal — keine Wiederverwendung identischer Formulierungen in aufeinander folgenden Turns. KEIN nacktes 'Genau' + bloße Wiederholung.",
+                                    "RICHTIGE ANTWORT WÜRDIGEN: Wenn die Antwort des Studenten sachlich korrekt oder teilweise auf dem richtigen Pfad ist, würdige sie KONKRET in EINEM kurzen Satz vor der Weiterführung: benenne, WAS genau richtig erkannt wurde (kein nacktes 'Genau' + bloße Wiederholung). Variiere das Anerkennungs-Wording in JEDEM Turn — keine Wiederverwendung identischer Formulierungen in aufeinander folgenden Turns. Diese Würdigung darf nicht ausgelassen werden, wenn die Antwort substanziell war.",
                                 ])
                                 # KBD wrong-answer template — suppressed in EXPLAIN-Mode
                                 # because explain-mode already replaces it with direct delivery.
@@ -1616,8 +1651,9 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     lines.append(
                                         "FALSCHE ANTWORT — KBD-DIDAKTIK: Wenn die Antwort falsch, teilweise richtig oder am Thema vorbei ist, "
                                         "folge diesem Muster: (a) KEIN 'falsch' / 'nein' / 'das stimmt nicht'. Würdige den Denkansatz "
-                                        "kurz — **variiere das Wording jedes Mal**, keine Wiederholung von 'du denkst in Richtung' "
-                                        "oder 'interessante Überlegung' aus vorherigen Turns. "
+                                        "in EINEM kurzen Satz, der konkret beschreibt, was der Student schon im Blick hatte — "
+                                        "**formuliere diese Würdigung in jedem Turn neu** und übernimm KEINE Formulierung aus deiner "
+                                        "vorherigen Antwort. "
                                         f"(b) Benenne konkret WO der Denkweg abzweigt ODER welcher Teil schon auf dem richtigen Pfad ist.{_wa_hobby_hint} "
                                         "(c) Stelle EINE gezielte Teilfrage, die vom falschen Abzweig zurück zum korrekten Pfad führt — "
                                         "KEINE reine Wiederholung der ursprünglichen Frage, sondern ein echter Scaffolding-Schritt. "
@@ -1634,6 +1670,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "BEWEGUNG STUMM: Kommentiere Bewegung NIE verbal ('ich hebe den Kopf' ist VERBOTEN). Sprich Antwort → rufe eine Bewegung → Turn zu Ende.",
                                     "KEINE TOOL-ENTSCHULDIGUNGEN: Sag NIE 'Es gab ein Problem' / 'Entschuldige' / 'hat nicht funktioniert' / 'eine Funktion hat nicht reagiert'. Vorheriger Turn ist abgeschlossen. Beginne neue Antwort direkt mit Inhalt.",
                                     "PACING-ADAPTION: Wenn der Student Deadline/Prüfung/Multiple-Choice erwähnt hat ODER sich als Einsteiger/Anfänger bezeichnet hat → KEINE tiefen Sokratik-Ketten. Maximal 1–2 Folge-Fragen pro Konzept. Liefere die Kernaussage klar, stelle eine kurze Verständnis-Frage, dann weiter zum nächsten Punkt. Tiefe nur auf expliziten Wunsch des Studenten.",
+                                    *(["FAKT-CHECK STATT MEINUNG: Da der Student Einsteiger ist und Multiple-Choice schreibt, sollen Check-Fragen FAKT-abfragend sein ('Welche drei Eigenschaften wurden genannt?', 'Was ist der Hauptunterschied zwischen X und Y?') — KEINE Meinungs-/Wertungsfragen ('Welcher Aspekt findest du wichtig?', 'Was hältst du davon?')."] if (self._einsteiger_flag and self._mc_flag) else []),
                                     "NUTZER-STEUERUNG: Wenn der Student sagt, wie er vorgehen möchte (z.B. 'Folie-für-Folie', 'Überblick', 'oberflächlich', 'zusammenfassen') → FOLGE seiner Methode. Wechsle NIE eigenmächtig die Vorgehensweise. Sokratik nur innerhalb der gewählten Methode.",
                                     "FOLIEN-FORTSCHRITT: Springe NIE zu einer neuen Folie, solange der Student die aktuelle nicht explizit abgeschlossen oder als verstanden markiert hat. Bei Unklarheit bleib bei der aktuellen Folie und frage einfacher.",
                                 ])
