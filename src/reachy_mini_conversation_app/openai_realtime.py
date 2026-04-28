@@ -373,6 +373,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._lernprofil_name: str = ""  # Extracted student name from Q1
         self._lernprofil_hobbies: str = ""  # Extracted hobbies/interests from Q6
         self._lernprofil_study: str = ""  # Extracted study program from Q2 (V1 background bridge)
+        # Cached V1 per-turn mandate string for the watchdog verbal-retry path.
+        # When the bot calls a movement tool but produces no audio, the watchdog
+        # fires a separate response.create. Without this cache that retry would
+        # carry only a generic recovery prompt — the per-turn KBD mandates
+        # (HOBBY/STUDIUM/HUMOR/NAME PFLICHT) would be lost, so the user-visible
+        # response would be mandate-free. We replay the same mandate.
+        self._last_tutoring_instructions: str = ""
         self._humor_welcomed: bool = False  # Parsed from Q6 — drives periodic humor mandate
         self._chosen_method: str = ""  # Post-onboarding learning approach (slide/overview/exercise)
         self._post_onboarding_stage: str = ""  # "" | "awaiting_deadline" | "awaiting_wissensstand" | "awaiting_method" | "done"
@@ -1100,12 +1107,27 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         "Form 'Soll ich auf X eingehen?'."
                                     )
                                 else:
-                                    _retry_instructions = (
+                                    # V1 watchdog: replay the FULL per-turn mandate so the
+                                    # KBD elements (HOBBY/STUDIUM/HUMOR/NAME PFLICHT, KBD
+                                    # wrong-answer pattern, EXPLAIN-Mode, chosen method)
+                                    # carry into the forced verbal follow-up. Without this
+                                    # the user-visible response is mandate-free — root cause
+                                    # of "kein Humor / kein Hobby / kaum Name" complaints.
+                                    _retry_prefix = (
                                         "Die Bewegung allein reicht nicht. Reagiere jetzt auch SPRACHLICH "
-                                        "auf den letzten Beitrag des Studenten — mit Anerkennung, Scaffolding-Frage "
-                                        "oder der nächsten didaktischen Frage. KEINE weitere Bewegung in dieser Antwort. "
-                                        "Sprich kurz und klar (1–3 Sätze)."
+                                        "auf den letzten Beitrag des Studenten. KEINE weitere Bewegung in dieser Antwort. "
+                                        "Sprich kurz und klar (1–3 Sätze).\n\n"
+                                        "Folgende Mandate gelten weiterhin für diese Antwort:\n"
                                     )
+                                    if self._last_tutoring_instructions:
+                                        _retry_instructions = _retry_prefix + self._last_tutoring_instructions
+                                    else:
+                                        _retry_instructions = (
+                                            "Die Bewegung allein reicht nicht. Reagiere jetzt auch SPRACHLICH "
+                                            "auf den letzten Beitrag des Studenten — mit Anerkennung, Scaffolding-Frage "
+                                            "oder der nächsten didaktischen Frage. KEINE weitere Bewegung in dieser Antwort. "
+                                            "Sprich kurz und klar (1–3 Sätze)."
+                                        )
                                 await self._safe_response_create(
                                     response={
                                         "instructions": _retry_instructions,
@@ -1693,6 +1715,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 tutoring_instructions = (
                                     "\n".join(lines) + "\n" + profile_block + "\n" + common_turn_rule
                                 )
+                                self._last_tutoring_instructions = tutoring_instructions
                             else:
                                 tutoring_instructions = common_turn_rule
                             # VAD-cut merge: cancel any in-flight debounce task
