@@ -995,6 +995,12 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     self._movement_dispatched_this_response = False
                     self._user_speech_during_current_response = False
                     self._response_active = True
+                    # V1: reset watchdog budget per response so a queued tutoring_turn_N
+                    # that itself ends movement-only can still trigger a verbal-retry.
+                    # (V2 path doesn't queue, so the practical effect there is identical.)
+                    _cur_profile = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) or ""
+                    if _cur_profile in V1_PROFILES and self._onboarding["phase"] == "tutoring":
+                        self._tutoring_verbal_retry_fired = False
                     # Watchdog: if response.done never arrives, force-clear the
                     # single-flight flag after 20s so queued response.creates
                     # can drain. Prevents end-of-session freeze.
@@ -1735,24 +1741,25 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 "tool_choice": "auto",
                             }
                             _label = f"tutoring_turn_{self._tutoring_turn_count}"
+                            _is_v2 = (_profile == "tutor_basic")
 
-                            async def _debounced_fire(payload: dict, label: str) -> None:
+                            async def _debounced_fire(payload: dict, label: str, is_v2: bool = _is_v2) -> None:
                                 try:
                                     await asyncio.sleep(0.9)
                                 except asyncio.CancelledError:
                                     return
                                 try:
-                                    # drop_if_active=True: kill duplicate response.create
-                                    # for the same user turn. Without this, two responses
-                                    # are generated and concatenated in the user's audio
-                                    # ("X ist Y. ... X ist Y, nämlich ..."). Substring
-                                    # dedup does NOT catch these — the wording differs.
-                                    # Earlier revert (3f82ee7) blamed this for missing
-                                    # response after "Einsteiger"; the real cause was the
-                                    # B9 V2 wissensstand→done fall-through bug, now fixed.
+                                    # V1: queue instead of drop. The whole reason V1 KBD
+                                    # was invisible: previous Stage-1/Stage-2 transition
+                                    # responses were still active when tutoring_turn_N
+                                    # fired → dropped → only the mandate-free watchdog
+                                    # retry was audible. Queueing makes the mandate-tied
+                                    # response play AFTER the active one finishes.
+                                    # V2: keep drop behavior (control condition; serial
+                                    # tutoring responses must not double-fire).
                                     await self._safe_response_create(
                                         response=payload, label=label,
-                                        drop_if_active=True,
+                                        drop_if_active=is_v2,
                                     )
                                 except Exception as e:
                                     logger.warning("Debounced tutoring fire failed: %s", e)
@@ -1868,6 +1875,37 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     # session. Swallow extras — the first movement already played.
                     _MOVEMENT_TOOL_NAMES = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
                     if tool_name in _MOVEMENT_TOOL_NAMES:
+                        # V1 only: block movement before the model has produced any audio
+                        # in this response. The "movement-only" failure mode (model fires
+                        # an emotion tool then stops) is what triggers the watchdog cascade
+                        # and strips KBD mandates from the audible turn. Force the model
+                        # to speak first by refusing the early movement call.
+                        # V2 path unchanged.
+                        _v1_active = (
+                            getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) in V1_PROFILES
+                            and self._onboarding["phase"] == "tutoring"
+                        )
+                        if (
+                            _v1_active
+                            and not self._response_audio_produced
+                            and not self._movement_dispatched_this_response
+                        ):
+                            logger.info(
+                                "V1: blocking movement tool '%s' before first audio — model must speak first",
+                                tool_name,
+                            )
+                            if isinstance(call_id, str):
+                                try:
+                                    await self.connection.conversation.item.create(
+                                        item={
+                                            "type": "function_call_output",
+                                            "call_id": call_id,
+                                            "output": json.dumps({"status": "skipped", "reason": "speak first"}),
+                                        },
+                                    )
+                                except Exception as e:
+                                    logger.debug("Failed to ack blocked movement tool: %s", e)
+                            continue
                         if self._movement_dispatched_this_response or self._movement_blocked_until_user_input:
                             reason = "same response" if self._movement_dispatched_this_response else "no user input since last movement"
                             logger.debug("Skipping movement tool '%s' (%s)", tool_name, reason)
