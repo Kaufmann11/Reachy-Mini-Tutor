@@ -157,6 +157,10 @@ _TRIGGERS: dict[str, str] = {
     "content_q":   r"\b(erkläre?\s+mir|was\s+(ist|bedeutet|heißt)|wie\s+funktioniert|definier(e)?|erklär\s+mir)\b",
     "exam":        r"\b(klausur|prüfung|hausaufgabe|aufgabe\s+lösen|lösung\s+der\s+aufgabe|musterlösung)\b",
     "depth_req":   r"\b(oberflächlich|zu\s+wenig|zu\s+kurz|tiefer|mehr\s+details|ausführlicher|genauer\s+erklär|verstehe\s+immer\s+noch\s+nicht|war\s+zu\s+schnell)\b",
+    # User-Override: "stop asking questions / just explain". When this fires the
+    # default "schließe mit Check-Frage ab"-mandate must be SUPPRESSED for several
+    # turns. Without it the model keeps asking despite explicit user instruction.
+    "no_questions": r"\b(stell\s+(mir\s+)?keine\s+fragen|hör\s+(bitte\s+)?auf\s+(zu\s+)?fragen|frag\s+(mich\s+)?nicht|nicht\s+(jedes\s+mal\s+|immer\s+)?fragen\s+stell|nicht\s+jedes\s+mal\s+fragen|(einfach|nur)\s+(weiter\s+)?erklären|keine\s+(rück\s*-?\s*)?fragen|ohne\s+fragen|mach\s+(mir\s+)?(einfach|bitte)\s+(die\s+)?zusammenfassung|ohne\s+rück.{0,3}fragen)\b",
 }
 
 
@@ -393,6 +397,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         # one yes/no check question. No Socratic chain, no hobby analogy.
         self._explain_mode_next_turn: bool = False
         self._no_idea_streak: int = 0   # consecutive user turns with no_idea trigger
+        # Sticky countdown after user explicitly asks to stop being questioned.
+        # When >0, the default "schließe mit Check-Frage ab"-mandate is replaced
+        # with a hard "NO question-back" mandate for this and the next N-1 turns.
+        # Decremented once per tutoring turn. Reset to 3 whenever no_questions fires.
+        self._no_questions_remaining: int = 0
         self._einsteiger_flag: bool = False  # student described self as Einsteiger/beginner
         self._deadline_flag: bool = False    # student mentioned deadline/Prüfung/MC
         self._mc_flag: bool = False          # multiple-choice specifically
@@ -854,6 +863,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._onboarding_item_ids = []
         self._explain_mode_next_turn = False
         self._no_idea_streak = 0
+        self._no_questions_remaining = 0
         self._einsteiger_flag = False
         self._deadline_flag = False
         self._mc_flag = False
@@ -1538,6 +1548,19 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     self._no_idea_streak += 1
                                 else:
                                     self._no_idea_streak = 0
+                                # User-Override: "stop asking questions" — sticky for 3 turns.
+                                # Fires once → counter set to 3 → decremented each tutoring
+                                # turn. While >0 the default Check-Frage-Pflicht is replaced
+                                # with a hard NO-question mandate. User intent always wins.
+                                if "no_questions" in fired_triggers:
+                                    self._no_questions_remaining = 3
+                                    logger.info(
+                                        "V1 user-override 'no_questions' fired turn=%d — suppressing question-back for next 3 turns",
+                                        self._tutoring_turn_count,
+                                    )
+                                _no_questions_active = self._no_questions_remaining > 0
+                                if _no_questions_active:
+                                    self._no_questions_remaining -= 1
                                 # Decide whether next turn must be EXPLAIN-Mode.
                                 # - frustration: always (user is already upset)
                                 # - no_idea streak ≥ 2: always (Socratic isn't working)
@@ -1561,8 +1584,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         self._tutoring_turn_count, explain_reason, self._no_idea_streak,
                                         self._einsteiger_flag, self._deadline_flag, self._mc_flag,
                                     )
-                                    # Suppress reactive hobby-analogy + Socratic sub-question; we want
-                                    # direct delivery. Keep only the emotional acknowledgment intent.
+                                    # Suppress reactive Socratic sub-question; we want direct delivery.
+                                    # PFLICHT-anchors (Hobby/Studium/Humor) on this turn stay allowed
+                                    # as a single short touch — they are LERNPROFIL personalization,
+                                    # not Sokratik. Without this concession, EXPLAIN-Mode silently
+                                    # kills V1 personalization on every no_idea/frustration turn.
                                     reactive_mandates = []
                                     lines.append(
                                         "EXPLAIN-MODE (JETZT STRIKT): Der Student ist unsicher oder "
@@ -1571,8 +1597,13 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         f"{('mit Namen ' + repr(self._lernprofil_name)) if self._lernprofil_name else ''} "
                                         "(variiere Wording, keine Floskel). "
                                         "(2) Liefere DIREKT 2–3 Sätze klare Fakt-Erklärung zum "
-                                        "aktuellen Konzept — keine Gegenfrage, keine Hobby-Analogie, "
-                                        "kein 'Stell dir vor', kein 'Du denkst in Richtung'. "
+                                        "aktuellen Konzept — keine weitere Sokratik-Frage, "
+                                        "kein 'Du denkst in Richtung'. "
+                                        "Ein KURZER PFLICHT-Anker (Hobby-Brücke / Studium-Bezug / Humor — "
+                                        "wenn dieser Turn dafür markiert ist, siehe weiter unten) ist erlaubt "
+                                        "als ein einziger zusätzlicher Satz. Diese personalisierte Brücke "
+                                        "ist KEIN Sokratik-Schritt und KEINE Hobby-Frage, sondern eine "
+                                        "kurze Anker-Aussage zum LERNPROFIL. "
                                         "(3) Schließe mit EINER einfachen Ja/Nein- oder "
                                         "Kurz-Check-Frage ab ('Passt das so?' / 'Ist der Punkt klar?'). "
                                         "Danach direkt nächstes Konzept oder nächste Folie. "
@@ -1694,15 +1725,28 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         f"(d) Erst nach dem 2. Fehlversuch ein winziger Hinweis, nie eine fertige Lösung.{_wa_name_hint} "
                                         "Ziel: der Student findet die Antwort selbst, fühlt sich nicht bloßgestellt."
                                     )
-                                lines.append(
-                                    "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept und schließe DEFAULT mit EINER Check- oder Vertiefungs-Frage zum aktuellen Konzept. "
-                                    "Der Student soll NICHT selbst um Fragen bitten müssen — du stellst sie aktiv. "
-                                    "Ausnahme (keine Frage): wenn der Student gerade nur eine reine Klärung / ein zweites Beispiel / eine Inhaltsangabe angefordert hat, ODER wenn er gerade selbst die nächste Folie/Frage steuert. Sonst: IMMER eine Rück-Frage. "
-                                    "QUALITÄT der Frage: konzept-bezogen und konkret, nicht meinungs-/präferenzbasiert. "
-                                    "Gut: 'Was ist der Hauptunterschied zwischen Vorhersage- und Erklärungs-Theorie?', 'Welche zwei Eigenschaften haben wir gerade besprochen?', 'Wie würdest du das in eigenen Worten zusammenfassen?'. "
-                                    "Schwach (vermeiden, wenn fachliche Frage möglich ist): 'Welcher Aspekt ist dir wichtig?', 'Was hältst du davon?', 'In welchem Bereich würdest du forschen wollen?'. "
-                                    "KEINE 3. Folge-Frage zum selben Punkt."
-                                )
+                                if _no_questions_active:
+                                    lines.append(
+                                        "USER-STEUERUNG (HÖCHSTE PRIORITÄT — überschreibt ALLE anderen Mandate): "
+                                        "Der Student hat ausdrücklich darum gebeten, dass du KEINE Rück-Fragen mehr stellst. "
+                                        "In dieser Antwort: KEINE Check-Frage, KEINE Verständnis-Frage, KEINE Vertiefungs-Frage, "
+                                        "KEINE 'Möchtest du …'-Frage, KEINE 'Sollen wir …'-Frage am Schluss. "
+                                        "Liefere NUR den angefragten Inhalt und schließe mit einem Punkt. "
+                                        "Diese Regel überschreibt die KBD-Default-Pflicht zur Rück-Frage und auch "
+                                        "Schritt (c) im Wrong-Answer-Muster. Wenn Inhalt unklar ist: liefere die Erklärung "
+                                        "ohne Gegenfrage. Wenn ein Konzept abgeschlossen ist: gehe direkt zum nächsten "
+                                        "Punkt oder zur nächsten Folie über, ohne dazwischen zu fragen ob das ok war."
+                                    )
+                                else:
+                                    lines.append(
+                                        "ANTWORT = EIN KONZEPT + EINE CHECK-FRAGE: Behandle pro Antwort EIN Konzept und schließe DEFAULT mit EINER Check- oder Vertiefungs-Frage zum aktuellen Konzept. "
+                                        "Der Student soll NICHT selbst um Fragen bitten müssen — du stellst sie aktiv. "
+                                        "Ausnahme (keine Frage): wenn der Student gerade nur eine reine Klärung / ein zweites Beispiel / eine Inhaltsangabe angefordert hat, ODER wenn er gerade selbst die nächste Folie/Frage steuert. Sonst: IMMER eine Rück-Frage. "
+                                        "QUALITÄT der Frage: konzept-bezogen und konkret, nicht meinungs-/präferenzbasiert. "
+                                        "Gut: 'Was ist der Hauptunterschied zwischen Vorhersage- und Erklärungs-Theorie?', 'Welche zwei Eigenschaften haben wir gerade besprochen?', 'Wie würdest du das in eigenen Worten zusammenfassen?'. "
+                                        "Schwach (vermeiden, wenn fachliche Frage möglich ist): 'Welcher Aspekt ist dir wichtig?', 'Was hältst du davon?', 'In welchem Bereich würdest du forschen wollen?'. "
+                                        "KEINE 3. Folge-Frage zum selben Punkt."
+                                    )
                                 lines.extend([
                                     "KEINE KAMERA: Sag nie 'ich sehe'. Für Folien nur rag_tool.",
                                     "KEIN INFO-DUMP: Max 3 Sätze, ein Gedanke, enden mit Folge-Frage.",
