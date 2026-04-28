@@ -1919,24 +1919,27 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                     # session. Swallow extras — the first movement already played.
                     _MOVEMENT_TOOL_NAMES = {"play_emotion", "stop_emotion", "move_head", "head_tracking"}
                     if tool_name in _MOVEMENT_TOOL_NAMES:
-                        # V1 only: block movement before the model has produced any audio
-                        # in this response. The "movement-only" failure mode (model fires
-                        # an emotion tool then stops) is what triggers the watchdog cascade
-                        # and strips KBD mandates from the audible turn. Force the model
-                        # to speak first by refusing the early movement call.
-                        # V2 path unchanged.
-                        _v1_active = (
-                            getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None) in V1_PROFILES
+                        # Block movement before the model has produced any audio in this
+                        # response. The "movement-only" failure mode (model fires an emotion
+                        # tool then stops) triggers the watchdog → verbal_retry → drop
+                        # cascade, which on V2 ends in a WebSocket close (code 1000) and
+                        # forces the user to redo onboarding. Force the model to speak
+                        # first by refusing the early movement call. Applies to both V1
+                        # (KBD) and V2 (control) in tutoring phase — pure stability guard,
+                        # no behavior change to V2's neutral style.
+                        _profile_now = getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
+                        _block_active = (
+                            (_profile_now in V1_PROFILES or _profile_now == "tutor_basic")
                             and self._onboarding["phase"] == "tutoring"
                         )
                         if (
-                            _v1_active
+                            _block_active
                             and not self._response_audio_produced
                             and not self._movement_dispatched_this_response
                         ):
                             logger.info(
-                                "V1: blocking movement tool '%s' before first audio — model must speak first",
-                                tool_name,
+                                "Tutoring: blocking movement tool '%s' before first audio (profile=%s) — model must speak first",
+                                tool_name, _profile_now,
                             )
                             if isinstance(call_id, str):
                                 try:
