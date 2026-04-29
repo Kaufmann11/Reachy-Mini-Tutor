@@ -366,6 +366,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
         self._movement_dispatched_this_response = False  # True after first movement tool dispatched in current response
         self._movement_blocked_until_user_input = False  # True after any movement; cleared on next user speech
         self._user_speech_during_current_response = False  # True if user started speaking during current bot response (used to suppress watchdog races)
+        self._current_response_is_idle = False  # True for the duration of an idle_signal response (intentional movement-only); suppresses verbal-retry watchdog
         # Onboarding state machine — reset at the start of every session
         self._onboarding: dict = {
             "phase": "onboarding",    # "onboarding" | "tutoring"
@@ -1110,6 +1111,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                             and not self._tutoring_verbal_retry_fired
                             and self._post_onboarding_stage == "done"
                             and not self._user_speech_during_current_response  # race fix: user is mid-turn, let their response.create answer
+                            and not self._current_response_is_idle  # idle_signal is intentionally speech-less; do not force verbal retry
                         ):
                             logger.warning("Tutoring: movement without speech — forcing verbal follow-up (profile=%s)", _gcur)
                             try:
@@ -1167,6 +1169,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                         # else: tutoring phase, no movement → stay silent, wait for user
                     self._response_audio_produced = False
                     self._response_create_issued = False
+                    self._current_response_is_idle = False  # idle_signal flag is per-response; clear after the watchdog check above
                     # Release single-flight lock: a Q response just finished.
                     # During onboarding, keep the lock held for an extra 800ms so that
                     # any echo/motor-noise transcripts arriving right after response.done
@@ -1528,9 +1531,18 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                     "'Möchtest du mehr Details?'). Sokratische "
                                     "Fragen sind verboten ('Was denkst du?', "
                                     "'Erzähl mir, was...', 'Bist du bereit?'). "
-                                    "Erlaubt ist höchstens EINE service-orientierte "
-                                    "Rückfrage am Ende, in der Form 'Soll ich auf X "
-                                    "eingehen?'. "
+                                    "Service-Rückfragen ('Soll ich auf X eingehen?', "
+                                    "'Wollen wir mit einem Beispiel weitergehen?', "
+                                    "'Möchtest du mehr über Y wissen?', 'Gibt es einen "
+                                    "Punkt auf den wir genauer eingehen sollen?', "
+                                    "'Soll ich noch mehr Details liefern?', 'Passt "
+                                    "das so für dich?') sind in dieser Antwort STANDARDMÄSSIG "
+                                    "VERBOTEN. Default-Ende ist Punkt + Stopp. Lass den "
+                                    "Studenten von sich aus die nächste Frage stellen. "
+                                    "Eine Service-Rückfrage ist nur erlaubt wenn der "
+                                    "Inhalt OBJEKTIV unvollständig wäre ohne nächsten "
+                                    "Schritt — und dann maximal in JEDER 4. Antwort, "
+                                    "nicht öfter. Im Zweifel: Punkt + Stopp. "
                                     "Adressiere ausschließlich mit 'Du', nie mit Namen."
                                 )
                             elif _profile in V1_PROFILES:
@@ -2349,6 +2361,11 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 "content": [{"type": "input_text", "text": timestamp_msg}],
             },
         )
+        # Mark this response as an idle signal so the "movement without speech"
+        # watchdog skips the verbal-retry — this response is intentionally
+        # speech-less (ambient movement during user silence). Without the flag
+        # the watchdog fires verbal_retry → drop cascade → WebSocket close.
+        self._current_response_is_idle = True
         await self._safe_response_create(
             response={
                 "instructions": "Call play_emotion with a valid emotion name, or call move_head with a direction (left/right/up/down/front). Do not invent new tool names. No speech.",
