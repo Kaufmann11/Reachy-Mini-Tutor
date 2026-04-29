@@ -160,7 +160,7 @@ _TRIGGERS: dict[str, str] = {
     # User-Override: "stop asking questions / just explain". When this fires the
     # default "schließe mit Check-Frage ab"-mandate must be SUPPRESSED for several
     # turns. Without it the model keeps asking despite explicit user instruction.
-    "no_questions": r"\b(stell\s+(mir\s+)?keine\s+fragen|hör\s+(bitte\s+)?auf\s+(zu\s+)?fragen|frag\s+(mich\s+)?nicht|nicht\s+(jedes\s+mal\s+|immer\s+)?fragen\s+stell|nicht\s+jedes\s+mal\s+fragen|(einfach|nur)\s+(weiter\s+)?erklären|keine\s+(rück\s*-?\s*)?fragen|ohne\s+fragen|mach\s+(mir\s+)?(einfach|bitte)\s+(die\s+)?zusammenfassung|ohne\s+rück.{0,3}fragen)\b",
+    "no_questions": r"(stell\s+(mir\s+)?keine\s+fragen|hör\s+(bitte\s+)?auf\s+(zu\s+)?fragen|frag\s+(mich\s+)?nicht|nicht\s+(jedes\s*mal|immer|ständig|dauernd|so\s+(viel|viele))\s+\w*\s*fragen|nicht\s+\w*\s*fragen\s+stell|jedes\s*mal\s+\w*\s*fragen\s+stell|(einfach|nur|bitte)\s+(weiter\s+)?(erklären|erklär|zusammenfassen)|keine\s+(rück\s*-?\s*)?fragen|ohne\s+(rück\s*-?\s*)?fragen|mach\s+(mir\s+)?(einfach|bitte)\s+(die\s+)?zusammenfassung|zuerst\s+(einfach\s+)?(zusammenfassen|erklären|erklär)|erst(\s+mal)?\s+(zusammenfassen|erklären|erklär)|kannst\s+du\s+(mir\s+)?(nicht|aufhören)\s+\w*\s*frag|hör\s+auf\s+\w*\s*zu\s+fragen)",
 }
 
 
@@ -800,6 +800,15 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                 "Wenn du eine Zahl oder ein Fach nicht ganz sicher gehört hast, lass sie WEG. "
                 "Ergänze NIE Antwortoptionen aus deiner vorigen Frage ('durch Fragen' etc.), die der Student gar nicht genannt hat. "
                 "Im Zweifel: weniger wiederholen. "
+                "\nVERBOTEN: Konstruktion 'Du hast gesagt: \"…\"' / 'Du sagtest: \"…\"' / 'Wie du sagtest, …' "
+                "mit einem Zitat in Anführungszeichen. Diese Konstruktion verleitet dich zu einer erfundenen "
+                "Quasi-Wörtlich-Wiedergabe. Erlaubt: paraphrasierende Anerkennung OHNE Zitat-Anführung, "
+                "z.B. 'Klingt nach einem fairen Plan.' / 'Spannend, [Name].' / 'Eine gute Note ist ein klares Ziel.' — "
+                "in eigenen Worten, kurz, ohne wörtliche Wiedergabe. "
+                "\nWENN DIE ANTWORT NICHT ZUR FRAGE PASST (z.B. ein Name als Antwort auf eine Motivations-Frage, "
+                "oder ein einzelnes themenfremdes Wort): NICHT halluzinieren, was der Student angeblich gemeint hat. "
+                "Stattdessen: ein neutrales 'Alles klar.' / 'Okay.' und direkt die nächste Frage stellen. "
+                "Im Zweifel knapp neutral, niemals Inhalt erfinden. "
                 f"\nStelle danach GENAU diese nächste Frage, Wort für Wort, unverändert:\n\n\"{question_text}\"\n\n"
                 "Die Frage muss wörtlich genau so vorkommen. Keine Umformulierung, keine zusätzlichen Erklärungen, "
                 "keine Aufzählung anderer Themen. Stelle in dieser Antwort NUR diese eine Frage — keine zweite Frage."
@@ -831,6 +840,7 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
 
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""
+        import re
         # V2 session-reset path: when this flag is True, we are resuming
         # AFTER Q7 with a fresh WebSocket so onboarding context is gone.
         # Skip onboarding init entirely and go straight to Stage-1a.
@@ -1640,16 +1650,41 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                 # Nur aktiv wenn Q6 humor_welcomed positiv war.
                                 if self._humor_welcomed and self._tutoring_turn_count in (3, 7, 11):
                                     lines.append(
-                                        "HUMOR-MOMENT (PFLICHT in dieser Antwort): Der Student hat in Q6 "
-                                        "Humor ausdrücklich begrüßt. Du MUSST in dieser Antwort EINEN konkreten "
-                                        "humoristischen Baustein einbauen, sodass der Student es als Humor "
-                                        "erkennt — z.B. einen augenzwinkernden Vergleich ('klingt komplizierter "
-                                        "als es ist — ungefähr wie die Abseitsregel'), eine leicht selbstironische "
-                                        "Bemerkung ('mein persönliches Lieblings-Chaos'), oder eine trockene Pointe "
-                                        "('ja, Statistiker hatten auch mal Spaß — angeblich'). EIN Humor-Element, "
-                                        "nicht mehr. Wähle es so, dass es inhaltlich andockt. Eine Antwort an diesem "
-                                        "Turn ohne erkennbaren Humor-Baustein gilt als unvollständig. "
-                                        "Danach sofort zurück zur Didaktik. Kein albernes Dauerfeuer."
+                                        "HUMOR-MOMENT (PFLICHT in dieser Antwort): Der Student hat in Q6 Humor "
+                                        "ausdrücklich begrüßt. Baue EINEN konkreten humoristischen Baustein ein, "
+                                        "der für sich allein als Witz/Pointe stehen kann — KEIN Meta-Talk über Humor "
+                                        "('jetzt wird's lustig', 'Humor kommt gleich', 'gut, ich packe die Humor-"
+                                        "Gewichte aus' — VERBOTEN). Mache stattdessen direkt eine konkrete witzige "
+                                        "Aussage. Erlaubte Formen:"
+                                        " (A) ÜBERTREIBUNG: 'X ist so komplex, dass selbst meine Trainings-Daten "
+                                        "kurz gezuckt haben.' "
+                                        " (B) UNERWARTETER VERGLEICH (kein 0815-Sport): 'Theorie ohne Anwendung "
+                                        "ist wie eine Hantel im Schaufenster — sieht beeindruckend aus, hebt aber "
+                                        "niemand.' "
+                                        " (C) TROCKENE POINTE: 'Wirtschaftsinformatiker erfanden den Begriff "
+                                        "'sozio-technisch', um endlich eine Ausrede zu haben, warum Kaffee-"
+                                        "automaten zu Forschungsobjekten werden.' "
+                                        " (D) LEICHTE SELBSTIRONIE: 'Ich erkläre dir das jetzt mit der gewohnten "
+                                        "Begeisterung eines Modells, das noch nie eine Klausur geschrieben hat.' "
+                                        "Wähle EINE dieser Formen. Inhaltlich an Folie/Konzept andocken. Nach dem "
+                                        "Humor-Element direkt zur Didaktik. Verboten: Wiederverwendung des gleichen "
+                                        "Witz-Bausteins aus früheren Turns. Verboten: Floskel-Humor ('haha', "
+                                        "'kleines Späßchen'). Wenn dir nichts Konkretes einfällt — KEIN Humor."
+                                    )
+                                # Reactive humor demand: if the user explicitly complains about
+                                # missing or weak humor, the next response must contain humor —
+                                # regardless of turn-number rotation. Only fires if humor is welcomed.
+                                if self._humor_welcomed and re.search(
+                                    r"(wo\s+(war|ist|bleibt)\s+(der\s+)?humor|kein(en)?\s+humor|nicht\s+(witzig|humorvoll)|du\s+lügst|gar\s+nichts?\s+humorvoll|bisschen\s+(witziger|humorvoller))",
+                                    (last_user_text or "").lower(),
+                                ):
+                                    lines.append(
+                                        "HUMOR-NACHFORDERUNG (PFLICHT): Der Student hat den fehlenden/schwachen "
+                                        "Humor explizit moniert. Liefere in dieser Antwort einen ECHTEN, eigen-"
+                                        "ständigen Humor-Baustein (siehe HUMOR-MOMENT-Formen A–D). KEIN Meta-Talk "
+                                        "über Humor, KEIN 'jetzt wird's lustig', KEIN Selbstkommentar zum "
+                                        "vorherigen Witz-Versuch. Direkt eine konkrete witzige Aussage, dann "
+                                        "zurück zum Stoff."
                                     )
                                 # 2bb) STUDIUM-BRÜCKE — sporadisch (Turns 4, 8) Bezug zum
                                 # Studienfach herstellen, wenn das Konzept dazu passt. Nur Anker,
@@ -1693,11 +1728,38 @@ class OpenaiRealtimeHandler(AsyncStreamHandler):
                                         f"Kein eigenmächtiger Wechsel der Vorgehensweise. Nur wenn der Student selbst "
                                         f"eine andere Methode wünscht, wechselst du.{method_entry_hint}"
                                     )
-                                # 3) RAG — only when doc uploaded.
+                                # 3) RAG — only when doc uploaded. Slides are an ANCHOR, not a cage.
+                                # General GPT-4o knowledge is allowed — but must be transparently labeled.
                                 if self._document_uploaded:
                                     lines.append(
-                                        "RAG-PFLICHT: Vor jeder fachlichen Aussage rag_tool aufrufen, dann 'Auf Folie X steht…' zitieren. Nichts erfinden."
+                                        "FOLIEN-ANKER (nicht Käfig): Wenn deine Antwort sich konkret auf Folien-Inhalt "
+                                        "bezieht, rufe rag_tool und zitiere 'Auf Folie X steht…'. "
+                                        "Allgemeines Fachwissen außerhalb der Folien ist erlaubt und erwünscht — "
+                                        "aber MARKIERE es transparent: 'Das steht nicht in deinen Folien, aber aus "
+                                        "meinem Trainings-Wissen…' oder 'Ergänzend dazu (nicht aus den Folien): …'. "
+                                        "Erfinde KEINEN Folien-Inhalt (nichts behaupten was auf einer Folie steht, "
+                                        "wenn es nicht so ist). Aber verweigere auch keine Ergänzungen."
                                     )
+                                else:
+                                    lines.append(
+                                        "WISSENS-QUELLE TRANSPARENT: Allgemeines Fachwissen ist erlaubt und erwünscht. "
+                                        "Wenn du Konzepte, Modelle oder Beispiele bringst die nicht aus konkretem Material "
+                                        "des Studenten stammen, sag das einfach offen: 'Aus meinem Trainings-Wissen…' / "
+                                        "'Standard-Definition in der Literatur…'. Keine schwammigen Ausweich-Floskeln "
+                                        "wie 'verlässliche Quellen' / 'etabliertes Wissen' / 'anerkannte Lehrbücher' "
+                                        "ohne konkrete Aussage."
+                                    )
+                                # Honest-source mandate (universal, not RAG-only): if the student asks
+                                # WHERE knowledge comes from, answer once, concretely, then move on.
+                                lines.append(
+                                    "HERKUNFTS-FRAGE EHRLICH BEANTWORTEN: Wenn der Student fragt woher dein Wissen "
+                                    "kommt, antworte EINMAL klar und konkret: 'Ich bin ein GPT-4o-Sprachmodell. Mein "
+                                    "Wissen stammt aus meinem Pre-Training auf öffentlich verfügbaren Texten (Lehrbücher, "
+                                    "Forschungsartikel, Web). Aus deinen hochgeladenen Folien lese ich live per rag_tool.' "
+                                    "Danach direkt zurück zum Stoff. KEINE Schwammigkeit ('verlässliche Quellen', "
+                                    "'etablierte Lehrbücher' ohne Konkretisierung) — das verspielt Vertrauen und führt "
+                                    "zu Eskalation. Ein einziger ehrlicher Satz reicht."
+                                )
                                 # 4) Universal turn-shape rules, tight.
                                 _wa_name = self._lernprofil_name or ""
                                 _wa_hobby = self._lernprofil_hobbies or ""
