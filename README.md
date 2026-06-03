@@ -1,13 +1,12 @@
-# Reachy Mini Tutor — Run Instructions
-
-Tutoring robot for university students built on Reachy Mini (Pollen Robotics).
-Masterarbeit ZHAW — "Desktop Robots for Tutoring in Higher Education"
+# Reachy Mini Tutor
+Tutoring robot software for university students built on Reachy Mini (Pollen Robotics).
+Part of the research project: "Knowledge-based Generative Social Robots for Tutoring in Higher Education" at Zurich University of Applied Science, Institue of Information Systems. 
 
 ---
 
 ## Prerequisites
 
-- Hardware: Reachy Mini Wireless (with antenna)
+- Hardware: Reachy Mini platform: https://huggingface.co/reachy-mini
 - Operating System: macOS 14 or newer
 - Browser: Google Chrome (required — Safari does not support WebRTC audio)
 - OpenAI API Key with Realtime API access
@@ -107,3 +106,11 @@ Stop the running terminals with `Ctrl+C`. If a terminal does not respond:
 ## Repository
 
 https://github.com/Kaufmann11/Reachy-Mini-Tutor
+
+## Acknowledgements
+This project is based on the Reachy Mini Conversation App by Pollen Robotics.
+
+Original repository:
+https://github.com/pollen-robotics/reachy_mini_conversation_app
+
+This project extends/modifies the original implementation for educational and research purposes.
